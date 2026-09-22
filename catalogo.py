@@ -181,10 +181,12 @@ def buscar_por_codigo(codigo, tipo_cliente, limite=10):
     }
 
 
-def buscar_por_texto(consulta, tipo_cliente, limite=15):
+def buscar_por_texto(consulta, tipo_cliente, limite=20):
     """Busca por vehículo, motor o tipo de pieza. Ej: 'inyector kangoo euro 4'."""
     cargar()
-    terminos = [t for t in re.split(r"\s+", _sin_acentos(consulta)) if len(t) >= 2]
+    # el año no se busca: en la lista aparece de formas muy distintas ("2012/2015", "a partir 2013")
+    terminos = [t for t in re.split(r"\s+", _sin_acentos(consulta))
+                if len(t) >= 2 and not re.fullmatch(r"(19|20)\d\d", t)]
     if not terminos:
         return []
     puntaje = []
@@ -195,4 +197,4 @@ def buscar_por_texto(consulta, tipo_cliente, limite=15):
             puntaje.append((s, i))
     puntaje.sort(key=lambda x: -x[0])
     mejor = puntaje[0][0] if puntaje else 0
-    return [_para_cliente(_productos[i], tipo_cliente) for s, i in puntaje if s >= mejor - 0.5][:limite]
+    return [_para_cliente(_productos[i], tipo_cliente) for s, i in puntaje if s >= mejor - 1.5][:limite]

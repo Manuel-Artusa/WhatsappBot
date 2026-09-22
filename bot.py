@@ -98,7 +98,7 @@ HERRAMIENTAS = [
     },
     {
         "name": "buscar_por_vehiculo",
-        "description": "Busca en la lista de precios por vehículo, motor y/o tipo de pieza. Ej: 'inyector kangoo euro 4', 'bomba alta presion s10 2.8'.",
+        "description": "Busca en la lista de precios por vehículo, motor y/o tipo de pieza. Usá 2 a 4 palabras clave, sin el año ni la marca del auto si el modelo ya la identifica. Ej: 'inyector hilux 2.5', 'inyector kangoo euro 4', 'bomba alta s10 2.8'. Después usá el año y el motor para elegir entre los resultados.",
         "input_schema": {
             "type": "object",
             "properties": {"consulta": {"type": "string"}},
@@ -133,7 +133,7 @@ def _ejecutar(nombre, datos, numero, sesion):
     if nombre == "registrar_tipo_cliente":
         sesion["tipo"] = datos["tipo"]
         sesion["negocio"] = datos.get("nombre_negocio")
-        return {"ok": True}
+        return {"ok": True, "nota": "Registrado. No hace falta volver a registrarlo en esta charla."}
     if nombre in ("buscar_por_codigo", "buscar_por_vehiculo") and not sesion["tipo"]:
         return {"error": "Primero preguntá si es casa de repuestos o particular y llamá a registrar_tipo_cliente."}
     if nombre == "buscar_por_codigo":
@@ -201,4 +201,5 @@ def responder(numero, texto_usuario):
         sesion["historial"] += [{"role": "user", "content": texto_usuario},
                                 {"role": "assistant", "content": respuesta}]
         sesion["historial"] = sesion["historial"][-MAX_MENSAJES_HISTORIAL:]
+        print(f"[{numero}] Respuesta: {respuesta[:300]}", flush=True)
         return respuesta

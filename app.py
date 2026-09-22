@@ -1,5 +1,6 @@
 import os
 import threading
+import traceback
 from collections import deque
 
 import requests
@@ -55,6 +56,7 @@ def procesar(msg):
         enviar(numero, respuesta)
     except Exception as e:
         print("Error procesando mensaje:", repr(e), flush=True)
+        traceback.print_exc()
         enviar(numero, "Perdón, tuve un problema para revisar eso. ¿Me lo repetís en un ratito?")
 
 
