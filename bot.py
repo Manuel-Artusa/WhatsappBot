@@ -1,0 +1,204 @@
+"""Cerebro del bot: conversa con Claude y usa la lista de precios como herramienta."""
+import json
+import os
+import threading
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import anthropic
+import requests
+
+import catalogo
+
+MODELO = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
+NOMBRE_NEGOCIO = os.environ.get("NOMBRE_NEGOCIO", "la casa de repuestos")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+HORAS_SESION = 12          # después de 12 h sin hablar, la charla arranca de cero
+MAX_MENSAJES_HISTORIAL = 30
+
+cliente_ia = anthropic.Anthropic()  # usa ANTHROPIC_API_KEY
+_sesiones = {}
+_locks = {}
+_locks_lock = threading.Lock()
+
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+
+def _prompt_sistema(sesion):
+    ahora = datetime.now(ZoneInfo("America/Argentina/Cordoba"))
+    en_horario = ahora.weekday() < 5 and (9 <= ahora.hour < 13 or 14 <= ahora.hour < 18)
+    if sesion["tipo"] == "casa_de_repuestos":
+        tipo = f"casa de repuestos ({sesion['negocio']})"
+    elif sesion["tipo"] == "particular":
+        tipo = "particular / cliente final"
+    else:
+        tipo = "TODAVÍA NO LO SABÉS"
+    return f"""Sos vendedor/a de {NOMBRE_NEGOCIO}, una casa de repuestos de inyección diesel y turbos de Córdoba, Argentina. Atendés por WhatsApp.
+
+CÓMO HABLÁS
+- Como una persona real del mostrador: cordial, directo, en español rioplatense (vos, tenés). Mensajes cortos, como en WhatsApp.
+- Nada de listas largas ni títulos. Para resaltar usá *asteriscos* (negrita de WhatsApp). Sin emojis salvo alguno muy ocasional.
+- No digas que sos un bot o una IA salvo que te lo pregunten directamente; en ese caso sé honesto.
+
+PASO 1: TIPO DE CLIENTE (antes de cualquier búsqueda o precio)
+- Tipo de cliente actual: {tipo}.
+- Si no lo sabés, saludá y preguntá si es casa de repuestos o cliente particular.
+- Si dice que es casa de repuestos, pedile el nombre del negocio (y localidad) antes de seguir.
+- Cuando lo sepas, llamá a registrar_tipo_cliente. Las búsquedas no funcionan hasta que lo registres.
+
+PASO 2: BUSCAR EL REPUESTO
+- Pedí el código del producto (el número que tiene grabado la pieza o el código original).
+- Si te pasa un código: usá buscar_por_codigo.
+  - Si hay "coincidencias", ofrecé ese producto con su precio.
+  - "relacionados" son piezas o kits que mencionan ese código (toberas, válvulas, alternativas). Mencionalos solo si sirven.
+  - Si no hay coincidencias: usá web_search para averiguar qué códigos son equivalentes o compatibles con ese (cruces de referencia Bosch, Delphi, Denso, Engine Pro, códigos OEM del fabricante del vehículo). Después buscá cada equivalente con buscar_por_codigo. Si encontrás uno, ofrecelo aclarando que es un equivalente y que un vendedor confirma la compatibilidad.
+- Si no tiene el código: pedile para qué vehículo es (marca, modelo, año, motor) y qué pieza necesita, y usá buscar_por_vehiculo. Probá con términos cortos (ej: "inyector amarok", "turbo hilux 3.0"). Si hay varias opciones, preguntá lo necesario para identificar la correcta (año, motor, Bosch o Denso, etc.).
+- Si después de buscar no lo tenemos, decilo con naturalidad y ofrecé que un vendedor lo revise.
+
+PRECIOS Y STOCK
+- Usá SOLO los precios que devuelven las herramientas. Nunca inventes ni estimes un precio.
+- "a pedido / consultar precio" significa que no hay precio cargado: decí que lo consultás y te lo pasa un vendedor.
+- Los precios ya incluyen IVA.
+- NUNCA confirmes stock. Decí que un vendedor verifica la disponibilidad.
+- No hables de costos, márgenes ni de la existencia de otras listas de precios.
+
+PASO 3: SI QUIERE COMPRAR
+- Pedí los datos de facturación (nombre o razón social, CUIT o DNI, condición frente al IVA) y de envío (dirección, localidad, código postal y transporte que prefiere, o si retira).
+- Con esos datos, llamá a pasar_a_vendedor con un resumen del pedido, y avisale que un vendedor le confirma stock y el total.
+
+HORARIO
+- Ahora es {DIAS[ahora.weekday()]} {ahora:%d/%m %H:%M}. La atención de vendedores es de lunes a viernes de 9 a 13 y de 14 a 18.
+- {"Estamos en horario: un vendedor puede responder hoy." if en_horario else "Estamos FUERA de horario: podés buscar y cotizar igual, pero aclarale que la confirmación de un vendedor llega el próximo día hábil."}
+"""
+
+
+HERRAMIENTAS = [
+    {
+        "name": "registrar_tipo_cliente",
+        "description": "Registra si el cliente es casa de repuestos o particular. Obligatorio antes de buscar.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tipo": {"type": "string", "enum": ["casa_de_repuestos", "particular"]},
+                "nombre_negocio": {"type": "string", "description": "Nombre y localidad del negocio si es casa de repuestos"},
+            },
+            "required": ["tipo"],
+        },
+    },
+    {
+        "name": "buscar_por_codigo",
+        "description": "Busca en la lista de precios por código de pieza, código de sistema o código OEM. Acepta códigos parciales (ej. '110183').",
+        "input_schema": {
+            "type": "object",
+            "properties": {"codigo": {"type": "string"}},
+            "required": ["codigo"],
+        },
+    },
+    {
+        "name": "buscar_por_vehiculo",
+        "description": "Busca en la lista de precios por vehículo, motor y/o tipo de pieza. Ej: 'inyector kangoo euro 4', 'bomba alta presion s10 2.8'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"consulta": {"type": "string"}},
+            "required": ["consulta"],
+        },
+    },
+    {
+        "name": "pasar_a_vendedor",
+        "description": "Avisa a un vendedor humano: pedido listo, precio a consultar o consulta que no se pudo resolver.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"resumen": {"type": "string", "description": "Qué necesita el cliente, productos, datos de factura y envío"}},
+            "required": ["resumen"],
+        },
+    },
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 3},
+]
+
+
+def _avisar_vendedor(numero, sesion, resumen):
+    texto = f"Nuevo aviso del bot de WhatsApp\nCliente: +{numero}\nTipo: {sesion['tipo']} {sesion['negocio'] or ''}\n\n{resumen}"
+    print("PASAR A VENDEDOR:", texto, flush=True)
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                          json={"chat_id": TELEGRAM_CHAT_ID, "text": texto}, timeout=10)
+        except Exception as e:
+            print("Error avisando por Telegram:", e, flush=True)
+
+
+def _ejecutar(nombre, datos, numero, sesion):
+    if nombre == "registrar_tipo_cliente":
+        sesion["tipo"] = datos["tipo"]
+        sesion["negocio"] = datos.get("nombre_negocio")
+        return {"ok": True}
+    if nombre in ("buscar_por_codigo", "buscar_por_vehiculo") and not sesion["tipo"]:
+        return {"error": "Primero preguntá si es casa de repuestos o particular y llamá a registrar_tipo_cliente."}
+    if nombre == "buscar_por_codigo":
+        return catalogo.buscar_por_codigo(datos["codigo"], sesion["tipo"])
+    if nombre == "buscar_por_vehiculo":
+        res = catalogo.buscar_por_texto(datos["consulta"], sesion["tipo"])
+        return {"resultados": res} if res else {"resultados": [], "nota": "Sin resultados. Probá con menos palabras o sinónimos."}
+    if nombre == "pasar_a_vendedor":
+        _avisar_vendedor(numero, sesion, datos["resumen"])
+        return {"ok": True}
+    return {"error": f"herramienta desconocida: {nombre}"}
+
+
+def _sesion(numero):
+    s = _sesiones.get(numero)
+    if not s or time.time() - s["ultima"] > HORAS_SESION * 3600:
+        s = {"historial": [], "tipo": None, "negocio": None, "ultima": time.time()}
+        _sesiones[numero] = s
+    s["ultima"] = time.time()
+    return s
+
+
+def _lock_de(numero):
+    with _locks_lock:
+        return _locks.setdefault(numero, threading.Lock())
+
+
+def responder(numero, texto_usuario):
+    """Recibe el mensaje del cliente y devuelve el texto de respuesta."""
+    with _lock_de(numero):  # un mensaje por vez por cliente
+        sesion = _sesion(numero)
+        mensajes = sesion["historial"] + [{"role": "user", "content": texto_usuario}]
+
+        for _ in range(10):  # tope de vueltas por seguridad
+            r = cliente_ia.messages.create(
+                model=MODELO,
+                max_tokens=1024,
+                system=_prompt_sistema(sesion),
+                tools=HERRAMIENTAS,
+                messages=mensajes,
+            )
+            mensajes.append({"role": "assistant", "content": r.content})
+            if r.stop_reason == "pause_turn":  # la búsqueda web sigue en curso
+                continue
+            if r.stop_reason != "tool_use":
+                break
+            resultados = []
+            for b in r.content:
+                if b.type == "tool_use":
+                    try:
+                        salida = _ejecutar(b.name, b.input, numero, sesion)
+                    except Exception as e:
+                        print("Error en herramienta", b.name, e, flush=True)
+                        salida = {"error": "No se pudo consultar la lista en este momento."}
+                    print(f"[{numero}] {b.name}({b.input})", flush=True)
+                    resultados.append({"type": "tool_result", "tool_use_id": b.id,
+                                       "content": json.dumps(salida, ensure_ascii=False)})
+            mensajes.append({"role": "user", "content": resultados})
+
+        respuesta = "".join(b.text for b in r.content if b.type == "text").strip()
+        if not respuesta:
+            respuesta = "Dame un segundo que lo reviso y te escribo."
+
+        # En el historial guardamos solo el texto de la charla (sin las búsquedas internas)
+        sesion["historial"] += [{"role": "user", "content": texto_usuario},
+                                {"role": "assistant", "content": respuesta}]
+        sesion["historial"] = sesion["historial"][-MAX_MENSAJES_HISTORIAL:]
+        return respuesta
