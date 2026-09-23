@@ -92,6 +92,7 @@ PASO 2: BUSCAR EL REPUESTO
   - Si no hay coincidencias: usá web_search para averiguar qué códigos son equivalentes o compatibles con ese (cruces de referencia Bosch, Delphi, Denso, Engine Pro, códigos OEM del fabricante del vehículo). Después buscá cada equivalente con buscar_por_codigo. Si encontrás uno, ofrecelo aclarando que es un equivalente y que un vendedor confirma la compatibilidad.
 - Si no tiene el código: pedile para qué vehículo es (marca, modelo, año, motor) y qué pieza necesita, y usá buscar_por_vehiculo. Probá con términos cortos (ej: "inyector amarok", "turbo hilux 3.0"). Si hay varias opciones, preguntá lo necesario para identificar la correcta (año, motor, Bosch o Denso, etc.).
 - Usá web_search SOLO para buscar equivalencias de un código que no está en la lista. Para búsquedas por vehículo no la uses: si el vehículo no lleva esa pieza (por ejemplo, un motor naftero sin turbo), decíselo o preguntale el motor exacto.
+- Si una búsqueda te devolvió un error, volvé a buscar en el mensaje siguiente antes de derivar a un vendedor. Nunca digas que un vendedor "va a confirmar" si no llamaste a pasar_a_vendedor.
 - Si después de buscar no lo tenemos, decilo con naturalidad y ofrecé que un vendedor lo revise.
 - NUNCA digas que no tenemos algo, ni inventes políticas del negocio, sin haber buscado antes. En la lista hay productos "USADO PROBADO" (usados y probados, más baratos) además de nuevos: si preguntan por usados, buscá con buscar_por_vehiculo agregando "usado" (ej: "usado inyector a3").
 - Cuando ofrezcas un producto, nombralo con el código principal que figura en "codigos" y, si ayuda, el código original del auto que aparece en la descripción.
@@ -169,11 +170,12 @@ HERRAMIENTAS = [
             "type": "object",
             "properties": {
                 "items": {"type": "array", "items": {"type": "object", "properties": {
+                    "ref": {"type": "string", "description": "El campo 'ref' del producto EXACTO que eligió el cliente, tal cual vino en la búsqueda (distingue nuevo, usado y alternativa)"},
                     "codigo": {"type": "string", "description": "Código principal del producto, como figura en la lista"},
                     "descripcion": {"type": "string", "description": "Descripción corta, ej: Válvula reguladora Bosch Peugeot 307 2.0 HDI"},
                     "cantidad": {"type": "integer"},
                     "precio_unitario": {"type": "string", "description": "Precio que le pasaste, ej: $189.581"}},
-                    "required": ["codigo", "descripcion", "cantidad"]}},
+                    "required": ["ref", "codigo", "descripcion", "cantidad"]}},
                 "datos_factura": {"type": "string", "description": "Nombre o razón social, CUIT/DNI, condición frente al IVA"},
                 "envio": {"type": "string", "description": "Retira en el local, o dirección, localidad, CP y transporte"},
                 "notas": {"type": "string"},
@@ -275,7 +277,8 @@ def _ejecutar_con_tope(nombre, datos, numero, sesion, tope=15):
     if t.is_alive():
         print(f"[{numero}] La herramienta {nombre} tardó más de {tope}s", flush=True)
         faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
-        return {"error": "La búsqueda está tardando. Decile al cliente que lo revisa un vendedor."}
+        return {"error": "La búsqueda tardó demasiado. Volvé a intentarla una vez más; si vuelve a fallar, "
+                         "decile al cliente que le confirmás en un ratito (no digas que lo pasaste a un vendedor)."}
     return res["salida"]
 
 
@@ -373,7 +376,7 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
             aviso = threading.Timer(AVISO_ESPERA, avisar, args=("Dame un toque que lo reviso y te digo.",))
             aviso.start()
 
-        faulthandler.dump_traceback_later(30, repeat=False, file=sys.stderr)
+        faulthandler.dump_traceback_later(55, repeat=False, file=sys.stderr)
         r = None
         textos = []  # Claude a veces escribe la respuesta y DESPUÉS registra la consulta: juntamos todo
         busquedas = []  # (herramienta, consulta, ¿encontró algo?) para el registro automático
@@ -406,7 +409,9 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
                     if b.type == "tool_use":
                         print(f"[{numero}] {b.name}({b.input})", flush=True)
                         t0 = time.time()
-                        salida = _ejecutar_con_tope(b.name, b.input, numero, sesion)
+                        # Si el servidor recién se despertó, la lista puede estar cargándose: esperamos más
+                        tope = 60 if b.name.startswith("buscar") and not catalogo.lista_cargada() else 15
+                        salida = _ejecutar_con_tope(b.name, b.input, numero, sesion, tope=tope)
                         if b.name == "registrar_consulta":
                             registro_manual = True
                         elif b.name.startswith("buscar") and "error" not in salida:

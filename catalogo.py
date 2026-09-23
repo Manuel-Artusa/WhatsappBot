@@ -33,6 +33,7 @@ FILA_INICIO = 4  # las filas 1-3 son encabezados
 _productos = []
 _indice_codigos = {}  # código normalizado -> set(índices): el producto ES ese código
 _indice_menciones = {}  # código normalizado -> set(índices): el código aparece en la descripción
+_por_ref = {}  # ref del producto (código de facturación, o F+fila) -> índice
 _ultima_carga = 0
 _lock = threading.Lock()
 _pid = os.getpid()
@@ -134,7 +135,7 @@ def asegurar_cargada():
 
 
 def cargar(forzar=False, contenido=None):
-    global _productos, _indice_codigos, _indice_menciones, _ultima_carga
+    global _productos, _indice_codigos, _indice_menciones, _ultima_carga, _por_ref
     _revisar_proceso()
     if not _lock.acquire(timeout=90):
         raise TimeoutError("La lista está trabada cargándose")
@@ -184,7 +185,18 @@ def cargar(forzar=False, contenido=None):
                 if len(k) >= 6 and k not in propios and any(ch.isdigit() for ch in k):
                     menciones.setdefault(k, set()).add(i)
 
+        # "ref": identifica UN producto exacto (hay códigos que tienen versión nueva, usada y alternativa).
+        # Es el código de facturación si no se repite; si no, la fila.
+        cuenta = {}
+        for p in productos:
+            cuenta[p["nro_sistema"]] = cuenta.get(p["nro_sistema"], 0) + 1
+        por_ref = {}
+        for n, p in enumerate(productos):
+            p["ref"] = p["nro_sistema"] if p["nro_sistema"] and cuenta[p["nro_sistema"]] == 1 else f"F{n}"
+            por_ref[p["ref"]] = n
+
         _productos, _indice_codigos, _indice_menciones, _ultima_carga = productos, indice, menciones, time.time()
+        _por_ref = por_ref
         print(f"Lista cargada: {len(productos)} productos", flush=True)
     finally:
         _lock.release()
@@ -196,6 +208,7 @@ def _para_cliente(p, tipo_cliente):
     """Solo los datos que se le pueden mostrar al cliente, con el precio que le corresponde."""
     precio = p["precio_taller"] if tipo_cliente == "casa_de_repuestos" else p["precio_particular"]
     return {
+        "ref": p.get("ref", ""),
         "codigos": " ".join(p["codigos"]),
         "descripcion": p["descripcion"],
         "marca": p["marca"],
@@ -258,16 +271,31 @@ def buscar_por_texto(consulta, tipo_cliente, limite=20):
     return [_para_cliente(_productos[i], tipo_cliente) for s, i in puntaje if s >= mejor * 0.6][:limite]
 
 
-def datos_internos(codigo):
-    """Para el vendedor (nunca para el cliente): código de facturación (NRO SISTEMA) y ubicación."""
+def datos_internos(codigo, ref=None, precio=None, descripcion=""):
+    """Para el vendedor (nunca para el cliente): código de facturación (NRO SISTEMA) y ubicación
+    del producto EXACTO que eligió el cliente. Si hay varias versiones con el mismo código (nuevo,
+    usado, alternativa), usa la ref; si no hay ref, desempata por precio y descripción."""
     asegurar_cargada()
-    q = normalizar_codigo(codigo)
-    if len(q) < 3:
-        return {"codigo_fact": "", "ubicacion": ""}
-    idxs = list(dict.fromkeys(_buscar_en(_indice_codigos, q)))
+    if ref and ref in _por_ref:
+        idxs = [_por_ref[ref]]
+    else:
+        q = normalizar_codigo(codigo)
+        idxs = list(dict.fromkeys(_buscar_en(_indice_codigos, q))) if len(q) >= 3 else []
+        if len(idxs) > 1 and precio:
+            mismos = [i for i in idxs if precio in (round(_productos[i]["precio_taller"]), round(_productos[i]["precio_particular"]))]
+            idxs = mismos or idxs
+        if len(idxs) > 1 and descripcion:
+            palabras = set(_sin_acentos(descripcion).split())
+            puntaje = {i: len(palabras & set(_productos[i]["_busqueda"].split())) for i in idxs}
+            mejor = max(puntaje.values())
+            idxs = [i for i in idxs if puntaje[i] == mejor]
     unir = lambda campo: " / ".join(dict.fromkeys(_productos[i][campo] for i in idxs if _productos[i].get(campo)))
     return {"codigo_fact": unir("nro_sistema"), "ubicacion": unir("ubicacion")}
 
 
 def ubicacion_de(codigo):
     return datos_internos(codigo)["ubicacion"]
+
+
+def lista_cargada():
+    return bool(_productos)

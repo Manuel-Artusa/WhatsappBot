@@ -116,15 +116,19 @@ def _texto_items(p, para_vendedor=False):
     lineas = []
     for i in p["items"]:
         if para_vendedor and not (i.get("codigo_fact") and i.get("ubicacion")):
-            extra = catalogo.datos_internos(i.get("codigo", ""))
+            extra = catalogo.datos_internos(i.get("codigo", ""), ref=i.get("ref"),
+                                            precio=round(_precio_a_numero(i.get("precio_unitario"))) or None,
+                                            descripcion=i.get("descripcion", ""))
             i["codigo_fact"] = i.get("codigo_fact") or extra["codigo_fact"]
             i["ubicacion"] = i.get("ubicacion") or extra["ubicacion"]
         precio = (f" — {catalogo.formatear_precio(_precio_a_numero(i['precio_unitario']))} c/u"
                   if i.get("precio_unitario") else "")
         if para_vendedor:
-            lineas.append(f"• *{i.get('cantidad', 1)}x* — Cód. facturación: *{i.get('codigo_fact') or 'sin dato'}*{precio}\n"
+            # en negrita, salvo que el dato ya tenga asteriscos (ej. ubicación "*i3") y se rompa el formato
+            neg = lambda v: f"*{v}*" if "*" not in v else v  # noqa: E731
+            lineas.append(f"• *{i.get('cantidad', 1)}x* — Cód. facturación: {neg(i.get('codigo_fact') or 'sin dato')}{precio}\n"
                           f"   {i.get('codigo', '')} {i.get('descripcion', '')}\n"
-                          f"   📍 Ubicación: *{i.get('ubicacion') or 'sin dato'}*")
+                          f"   📍 Ubicación: {neg(i.get('ubicacion') or 'sin dato')}")
         else:
             lineas.append(f"• {i.get('cantidad', 1)}x *{i.get('codigo', '')}* {i.get('descripcion', '')}{precio}")
     return "\n".join(lineas)
@@ -173,7 +177,10 @@ def crear(numero, sesion, datos):
     for i in datos.get("items", []):
         i = dict(i)
         i["cantidad"] = int(_precio_a_numero(i.get("cantidad", 1)) or 1)
-        i.update(catalogo.datos_internos(i.get("codigo", "")))  # código de facturación y ubicación
+        # código de facturación y ubicación del producto exacto que eligió
+        i.update(catalogo.datos_internos(i.get("codigo", ""), ref=i.get("ref"),
+                                         precio=round(_precio_a_numero(i.get("precio_unitario"))) or None,
+                                         descripcion=i.get("descripcion", "")))
         items.append(i)
     if not items:
         return {"error": "El pedido no tiene productos."}
