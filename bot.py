@@ -96,6 +96,7 @@ PASO 2: BUSCAR EL REPUESTO
   - Si salen varias versiones del MISMO repuesto (nuevo, usado probado, alternativa Engine Pro), mandalas juntas con sus precios y que elija.
   - Solo si salen repuestos DISTINTOS según el año o el motor, preguntá el dato puntual que los diferencia, nombrando las opciones (ej: "¿es la 2.5 o la 3.0?"). Nunca pidas año y motor "por las dudas".
   - Si no sabe el vehículo ni la pieza, recién ahí preguntale.
+- No escribas nada antes de usar una herramienta: primero buscá y después respondé una sola vez con el resultado.
 - Sé directo: respuestas cortas, sin vueltas ni preguntas innecesarias. Si ya tenés la info para cotizar, cotizá.
 - Las opciones de motor, año o versión salen SOLO de los resultados de la búsqueda. Nunca las inventes con lo que sabés de autos.
 - Usá web_search SOLO para buscar equivalencias de un código que no está en la lista. Para búsquedas por vehículo no la uses: si el vehículo no lleva esa pieza (por ejemplo, un motor naftero sin turbo), decíselo o preguntale el motor exacto.
@@ -419,7 +420,11 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
                 for b in r.content:
                     if b.type == "server_tool_use":
                         print(f"[{numero}] Búsqueda web: {b.input}", flush=True)
-                textos += [b.text for b in r.content if b.type == "text" and b.text.strip()]
+                # Nos quedamos con el texto de la ÚLTIMA respuesta que tenga texto: lo que escribe antes de
+                # buscar ("te busco...", "¿qué motor es?") es un borrador, no la respuesta.
+                nuevos = [b.text for b in r.content if b.type == "text" and b.text.strip()]
+                if nuevos:
+                    textos = nuevos
                 mensajes.append({"role": "assistant", "content": r.content})
                 if r.stop_reason == "pause_turn":  # la búsqueda web sigue en curso
                     continue
