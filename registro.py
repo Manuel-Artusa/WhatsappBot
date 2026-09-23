@@ -14,12 +14,19 @@ REGISTRO_CLAVE = os.environ.get("REGISTRO_CLAVE", "")
 _http = requests.Session()
 _http.trust_env = False
 
+if REGISTRO_URL:
+    print(f"Registro en planilla: ACTIVADO ({REGISTRO_URL[:60]}...)", flush=True)
+else:
+    print("Registro en planilla: DESACTIVADO (falta la variable REGISTRO_URL en Render)", flush=True)
+
 
 def _enviar(datos):
     try:
         r = _http.post(REGISTRO_URL, json={**datos, "clave": REGISTRO_CLAVE}, timeout=30)
         if r.status_code != 200 or '"ok":true' not in r.text.replace(" ", ""):
             print("Registro en planilla falló:", r.status_code, r.text[:200], flush=True)
+        else:
+            print(f"Guardado en planilla: {datos.get('accion')}", flush=True)
     except Exception as e:
         print("No se pudo registrar en la planilla:", repr(e)[:200], flush=True)
 
