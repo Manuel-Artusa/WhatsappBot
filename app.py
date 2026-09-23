@@ -28,9 +28,12 @@ def normalizar_ar(numero):
 
 
 def _graph(payload):
-    r = requests.post(GRAPH_URL, headers={"Authorization": f"Bearer {WA_TOKEN}"}, json=payload, timeout=15)
-    if r.status_code != 200:
-        print("Error de WhatsApp:", r.status_code, r.text, flush=True)
+    try:
+        r = requests.post(GRAPH_URL, headers={"Authorization": f"Bearer {WA_TOKEN}"}, json=payload, timeout=15)
+        if r.status_code != 200:
+            print("Error de WhatsApp:", r.status_code, r.text[:300], flush=True)
+    except Exception as e:
+        print("No se pudo conectar con WhatsApp:", repr(e)[:200], flush=True)
 
 
 def enviar(to, texto):

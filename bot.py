@@ -1,5 +1,7 @@
 """Cerebro del bot: conversa con Claude y usa la lista de precios como herramienta."""
+import faulthandler
 import json
+import sys
 import os
 import re
 import threading
@@ -160,6 +162,27 @@ def _ejecutar(nombre, datos, numero, sesion):
     return {"error": f"herramienta desconocida: {nombre}"}
 
 
+def _ejecutar_con_tope(nombre, datos, numero, sesion, tope=15):
+    """Corre la herramienta, pero si tarda más de `tope` segundos no espera más."""
+    res = {}
+
+    def correr():
+        try:
+            res["salida"] = _ejecutar(nombre, datos, numero, sesion)
+        except Exception as e:
+            print("Error en herramienta", nombre, repr(e), flush=True)
+            res["salida"] = {"error": "No se pudo consultar la lista en este momento."}
+
+    t = threading.Thread(target=correr, daemon=True)
+    t.start()
+    t.join(tope)
+    if t.is_alive():
+        print(f"[{numero}] La herramienta {nombre} tardó más de {tope}s", flush=True)
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        return {"error": "La búsqueda está tardando. Decile al cliente que lo revisa un vendedor."}
+    return res["salida"]
+
+
 def _sesion(numero):
     s = _sesiones.get(numero)
     if not s or time.time() - s["ultima"] > HORAS_SESION * 3600:
@@ -192,6 +215,7 @@ def responder(numero, texto_usuario, avisar=None):
             aviso = threading.Timer(AVISO_ESPERA, avisar, args=("Dame un toque que lo reviso y te digo.",))
             aviso.start()
 
+        faulthandler.dump_traceback_later(30, repeat=False, file=sys.stderr)
         r = None
         try:
             for vuelta in range(10):  # tope de vueltas por seguridad
@@ -219,15 +243,14 @@ def responder(numero, texto_usuario, avisar=None):
                 for b in r.content:
                     if b.type == "tool_use":
                         print(f"[{numero}] {b.name}({b.input})", flush=True)
-                        try:
-                            salida = _ejecutar(b.name, b.input, numero, sesion)
-                        except Exception as e:
-                            print("Error en herramienta", b.name, e, flush=True)
-                            salida = {"error": "No se pudo consultar la lista en este momento."}
+                        t0 = time.time()
+                        salida = _ejecutar_con_tope(b.name, b.input, numero, sesion)
+                        print(f"[{numero}] {b.name} listo en {time.time() - t0:.2f}s", flush=True)
                         resultados.append({"type": "tool_result", "tool_use_id": b.id,
                                            "content": json.dumps(salida, ensure_ascii=False)})
                 mensajes.append({"role": "user", "content": resultados})
         finally:
+            faulthandler.cancel_dump_traceback_later()
             if aviso:
                 aviso.cancel()
 

@@ -31,6 +31,7 @@ _indice_codigos = {}  # código normalizado -> set(índices): el producto ES ese
 _indice_menciones = {}  # código normalizado -> set(índices): el código aparece en la descripción
 _ultima_carga = 0
 _lock = threading.Lock()
+_pid = os.getpid()
 
 
 # ---------- utilidades ----------
@@ -91,15 +92,58 @@ def _url_descarga(url):
     return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
 
 
+_refrescando = False
+
+
+def _refrescar_en_segundo_plano():
+    global _refrescando
+    try:
+        cargar(forzar=True)
+    except Exception as e:
+        print("No se pudo refrescar la lista:", repr(e), flush=True)
+    finally:
+        _refrescando = False
+
+
+def _revisar_proceso():
+    """Si el servidor copió este proceso (fork) en medio de una carga, el candado quedaría
+    trabado para siempre. Si cambió el proceso, arrancamos con candado y datos nuevos."""
+    global _pid, _lock, _productos, _indice_codigos, _indice_menciones, _ultima_carga, _refrescando
+    if os.getpid() != _pid:
+        print(f"Proceso nuevo ({_pid} -> {os.getpid()}): reinicio la lista", flush=True)
+        _pid = os.getpid()
+        _lock = threading.Lock()
+        _productos, _indice_codigos, _indice_menciones = [], {}, {}
+        _ultima_carga, _refrescando = 0, False
+
+
+def asegurar_cargada():
+    """Lo que llaman las búsquedas: nunca hace esperar al cliente.
+    Si la lista está vieja, la refresca en segundo plano y mientras usa la que tiene."""
+    global _refrescando
+    _revisar_proceso()
+    if not _productos:
+        cargar(forzar=True)
+        return
+    if time.time() - _ultima_carga > REFRESCO_SEG and not _refrescando:
+        _refrescando = True
+        threading.Thread(target=_refrescar_en_segundo_plano, daemon=True).start()
+
+
 def cargar(forzar=False, contenido=None):
     global _productos, _indice_codigos, _indice_menciones, _ultima_carga
-    with _lock:
+    _revisar_proceso()
+    if not _lock.acquire(timeout=90):
+        raise TimeoutError("La lista está trabada cargándose")
+    try:
         if not forzar and contenido is None and time.time() - _ultima_carga < REFRESCO_SEG and _productos:
             return
         if contenido is None:
-            r = requests.get(_url_descarga(LISTA_URL), timeout=60)
+            t0 = time.time()
+            r = requests.get(_url_descarga(LISTA_URL), timeout=(10, 30))
             r.raise_for_status()
             contenido = r.content
+            print(f"Lista descargada en {time.time() - t0:.1f}s", flush=True)
         filas = _leer_filas(contenido)
 
         productos, indice, menciones = [], {}, {}
@@ -138,6 +182,8 @@ def cargar(forzar=False, contenido=None):
 
         _productos, _indice_codigos, _indice_menciones, _ultima_carga = productos, indice, menciones, time.time()
         print(f"Lista cargada: {len(productos)} productos", flush=True)
+    finally:
+        _lock.release()
 
 
 # ---------- búsquedas ----------
@@ -167,7 +213,7 @@ def _buscar_en(indice, q):
 def buscar_por_codigo(codigo, tipo_cliente, limite=10):
     """Devuelve {'coincidencias': productos que SON ese código,
                  'relacionados': productos que lo mencionan (kits, piezas, alternativas)}"""
-    cargar()
+    asegurar_cargada()
     q = normalizar_codigo(codigo)
     if len(q) < 3:
         return {"coincidencias": [], "relacionados": []}
@@ -184,7 +230,7 @@ def buscar_por_codigo(codigo, tipo_cliente, limite=10):
 
 def buscar_por_texto(consulta, tipo_cliente, limite=20):
     """Busca por vehículo, motor o tipo de pieza. Ej: 'inyector kangoo euro 4'."""
-    cargar()
+    asegurar_cargada()
     # el año no se busca: en la lista aparece de formas muy distintas ("2012/2015", "a partir 2013")
     terminos = [t for t in re.split(r"\s+", _sin_acentos(consulta))
                 if len(t) >= 2 and not re.fullmatch(r"(19|20)\d\d", t)]
