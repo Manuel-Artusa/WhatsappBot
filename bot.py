@@ -312,6 +312,7 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
 
         faulthandler.dump_traceback_later(30, repeat=False, file=sys.stderr)
         r = None
+        textos = []  # Claude a veces escribe la respuesta y DESPUÉS registra la consulta: juntamos todo
         try:
             for vuelta in range(10):  # tope de vueltas por seguridad
                 if time.time() - inicio > TIEMPO_MAXIMO:
@@ -329,6 +330,7 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
                 for b in r.content:
                     if b.type == "server_tool_use":
                         print(f"[{numero}] Búsqueda web: {b.input}", flush=True)
+                textos += [b.text for b in r.content if b.type == "text" and b.text.strip()]
                 mensajes.append({"role": "assistant", "content": r.content})
                 if r.stop_reason == "pause_turn":  # la búsqueda web sigue en curso
                     continue
@@ -351,9 +353,7 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
             if aviso:
                 aviso.cancel()
 
-        respuesta = ""
-        if r is not None and r.stop_reason not in ("tool_use", "pause_turn"):
-            respuesta = _formato_whatsapp("".join(b.text for b in r.content if b.type == "text"))
+        respuesta = _formato_whatsapp("\n\n".join(t.strip() for t in textos))
         if not respuesta:
             respuesta = "Lo estoy revisando con un compañero y en un ratito te confirmo."
             _avisar_vendedor(numero, sesion, f"El bot no pudo resolver esta consulta a tiempo. Último mensaje del cliente: {texto_usuario}")
