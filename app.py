@@ -86,7 +86,7 @@ def transcribir(datos, mime):
     return r.json().get("text", "").strip()
 
 
-def procesar(msg):
+def procesar(msg, nombre=None):
     numero = msg["from"]
     avisar = lambda t: enviar(numero, t)  # noqa: E731
     try:
@@ -94,7 +94,7 @@ def procesar(msg):
         tipo = msg.get("type")
 
         if tipo == "text":
-            respuesta = bot.responder(numero, msg["text"]["body"], avisar=avisar)
+            respuesta = bot.responder(numero, msg["text"]["body"], avisar=avisar, nombre=nombre)
 
         elif tipo == "image":
             datos, mime = descargar_media(msg["image"]["id"])
@@ -103,7 +103,7 @@ def procesar(msg):
             else:
                 texto = msg["image"].get("caption", "")
                 print(f"[{numero}] Foto recibida ({len(datos) // 1024} KB) {texto}", flush=True)
-                respuesta = bot.responder(numero, texto, avisar=avisar, imagen=(datos, mime))
+                respuesta = bot.responder(numero, texto, avisar=avisar, imagen=(datos, mime), nombre=nombre)
 
         elif tipo == "audio":
             if not TRANSCRIPCION_API_KEY:
@@ -113,7 +113,7 @@ def procesar(msg):
                 texto = transcribir(datos, mime)
                 print(f"[{numero}] Audio transcripto: {texto}", flush=True)
                 if texto:
-                    respuesta = bot.responder(numero, f"(Audio transcripto) {texto}", avisar=avisar)
+                    respuesta = bot.responder(numero, f"(Audio transcripto) {texto}", avisar=avisar, nombre=nombre)
                 else:
                     respuesta = "No llegué a entender el audio. ¿Me lo escribís?"
 
@@ -145,13 +145,16 @@ def recibir():
     data = request.get_json(silent=True) or {}
     for entry in data.get("entry", []):
         for change in entry.get("changes", []):
-            for msg in change.get("value", {}).get("messages", []):
+            valor = change.get("value", {})
+            # nombre de perfil de WhatsApp de cada cliente (para agendarlo)
+            nombres = {c.get("wa_id"): c.get("profile", {}).get("name") for c in valor.get("contacts", [])}
+            for msg in valor.get("messages", []):
                 if msg.get("id") in _procesados:
                     continue
                 _procesados.append(msg.get("id"))
                 print("Mensaje recibido de", msg.get("from"), ":", msg.get("text", {}).get("body", msg.get("type")), flush=True)
                 # Respondemos a Meta al instante y pensamos la respuesta en segundo plano
-                threading.Thread(target=procesar, args=(msg,), daemon=True).start()
+                threading.Thread(target=procesar, args=(msg, nombres.get(msg.get("from"))), daemon=True).start()
     return "ok", 200
 
 

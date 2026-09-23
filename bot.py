@@ -14,6 +14,7 @@ import anthropic
 import requests
 
 import catalogo
+import registro
 
 _http = requests.Session()
 _http.trust_env = False
@@ -106,6 +107,9 @@ PRECIOS Y STOCK
 - NUNCA confirmes stock. Decí que un vendedor verifica la disponibilidad.
 - No hables de costos, márgenes ni de la existencia de otras listas de precios.
 
+REGISTRO INTERNO (el cliente no lo ve, nunca se lo menciones)
+- Cada vez que resuelvas un repuesto que pidió el cliente (lo tengamos o no), llamá a registrar_consulta UNA vez por ese repuesto, con todos los datos que sepas: pieza, código pedido, marca, modelo, motor, año, si lo teníamos, y lo que ofreciste. Si después el cliente te da más datos del mismo repuesto, no lo registres de nuevo.
+
 PASO 3: SI QUIERE COMPRAR
 - Pedí los datos de facturación (nombre o razón social, CUIT o DNI, condición frente al IVA) y de envío (dirección, localidad, código postal y transporte que prefiere, o si retira).
 - Con esos datos, llamá a pasar_a_vendedor con un resumen del pedido, y avisale que un vendedor le confirma stock y el total.
@@ -156,6 +160,26 @@ HERRAMIENTAS = [
             "required": ["resumen"],
         },
     },
+    {
+        "name": "registrar_consulta",
+        "description": "Guarda en la base de datos interna un repuesto que pidió el cliente y si lo teníamos. Una vez por repuesto pedido.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pieza": {"type": "string", "description": "Tipo de pieza en minúscula y singular: inyector, tobera, turbo, bomba de alta, sensor map, válvula, kit, etc."},
+                "codigo_pedido": {"type": "string", "description": "Código que pidió el cliente, si dio uno"},
+                "marca": {"type": "string", "description": "Marca del vehículo, ej: Toyota, Volkswagen, Renault"},
+                "modelo": {"type": "string", "description": "Modelo, ej: Hilux, Amarok, Kangoo"},
+                "motor": {"type": "string", "description": "Motor, ej: 2.5, 2.0 TDI, 1.5 dCi"},
+                "anio": {"type": "string"},
+                "resultado": {"type": "string", "enum": ["lo tenemos", "no lo tenemos", "equivalente", "sin precio / a pedido"]},
+                "codigo_ofrecido": {"type": "string"},
+                "precio_ofrecido": {"type": "string"},
+                "notas": {"type": "string", "description": "Algo útil: si era usado, si pidió varias unidades, etc."},
+            },
+            "required": ["pieza", "resultado"],
+        },
+    },
     {"type": "web_search_20250305", "name": "web_search", "max_uses": 3},
 ]
 
@@ -183,6 +207,7 @@ def _ejecutar(nombre, datos, numero, sesion):
     if nombre == "registrar_tipo_cliente":
         sesion["tipo"] = datos["tipo"]
         sesion["negocio"] = datos.get("nombre_negocio")
+        registro.contacto(numero, sesion.get("nombre"), sesion["tipo"], sesion["negocio"])
         return {"ok": True, "nota": "Registrado. No hace falta volver a registrarlo en esta charla."}
     if nombre in ("buscar_por_codigo", "buscar_por_vehiculo") and not sesion["tipo"]:
         return {"error": "Primero preguntá si es casa de repuestos o particular y llamá a registrar_tipo_cliente."}
@@ -191,6 +216,9 @@ def _ejecutar(nombre, datos, numero, sesion):
     if nombre == "buscar_por_vehiculo":
         res = catalogo.buscar_por_texto(datos["consulta"], sesion["tipo"])
         return {"resultados": res} if res else {"resultados": [], "nota": "Sin resultados. Probá con menos palabras o sinónimos."}
+    if nombre == "registrar_consulta":
+        registro.consulta(numero, sesion, datos)
+        return {"ok": True}
     if nombre == "pasar_a_vendedor":
         _avisar_vendedor(numero, sesion, datos["resumen"])
         return {"ok": True}
@@ -238,17 +266,21 @@ def _formato_whatsapp(texto):
     return texto.strip()
 
 
-def responder(numero, texto_usuario, avisar=None, imagen=None):
+def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
     """Recibe el mensaje del cliente y devuelve el texto de respuesta.
     avisar(texto): función opcional para mandar un mensaje intermedio si la respuesta tarda.
     imagen: (bytes, tipo_mime) si el cliente mandó una foto."""
     # Números de Paraguay (+595): directo al contacto de Paraguay, sin pasar por Claude
     if numero.startswith("595"):
         print(f"[{numero}] Número de Paraguay: derivado a Monse", flush=True)
+        registro.contacto(numero, nombre, nuevo_mensaje=True)
         return MENSAJE_PARAGUAY
 
     with _lock_de(numero):  # un mensaje por vez por cliente
         sesion = _sesion(numero)
+        if nombre:
+            sesion["nombre"] = nombre
+        registro.contacto(numero, sesion.get("nombre"), sesion["tipo"], sesion["negocio"], nuevo_mensaje=True)
         # La foto se guarda un par de mensajes más, por si el bot todavía no pudo buscar
         # (por ejemplo, porque primero tenía que preguntar si es casa de repuestos o particular).
         if imagen:

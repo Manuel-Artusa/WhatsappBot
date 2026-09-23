@@ -23,6 +23,7 @@ o busca por vehículo si no tiene el código. Toma datos de factura y envío y a
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | (opcional) para recibir avisos de pedidos por Telegram |
 | `TRANSCRIPCION_API_KEY` | (opcional) clave de Groq (console.groq.com) para entender audios |
 | `TRANSCRIPCION_URL`, `TRANSCRIPCION_MODELO` | (opcional) para usar otro servicio de transcripción compatible con OpenAI |
+| `REGISTRO_URL`, `REGISTRO_CLAVE` | (opcional) planilla de Google Sheets donde se guardan consultas y contactos (ver `google_apps_script.js`) |
 | `BUSQUEDA_WEB` | (opcional) `0` para que no busque equivalencias en Google |
 
 ## Deploy en Render
