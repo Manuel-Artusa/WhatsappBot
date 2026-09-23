@@ -14,6 +14,10 @@ import requests
 
 import catalogo
 
+_http = requests.Session()
+_http.trust_env = False
+ZONA = ZoneInfo("America/Argentina/Cordoba")  # se carga al arrancar, no a mitad de una charla
+
 MODELO = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
 NOMBRE_NEGOCIO = os.environ.get("NOMBRE_NEGOCIO", "la casa de repuestos")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -33,7 +37,7 @@ DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "doming
 
 
 def _prompt_sistema(sesion):
-    ahora = datetime.now(ZoneInfo("America/Argentina/Cordoba"))
+    ahora = datetime.now(ZONA)
     en_horario = ahora.weekday() < 5 and (9 <= ahora.hour < 13 or 14 <= ahora.hour < 18)
     if sesion["tipo"] == "casa_de_repuestos":
         tipo = f"casa de repuestos ({sesion['negocio']})"
@@ -138,7 +142,7 @@ def _avisar_vendedor(numero, sesion, resumen):
     print("PASAR A VENDEDOR:", texto, flush=True)
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            _http.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                           json={"chat_id": TELEGRAM_CHAT_ID, "text": texto}, timeout=10)
         except Exception as e:
             print("Error avisando por Telegram:", e, flush=True)

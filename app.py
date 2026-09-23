@@ -6,6 +6,11 @@ from collections import deque
 import requests
 from flask import Flask, request
 
+# Importamos todo acá, al arrancar, y no a mitad de una charla: en Python 3.14 los imports
+# que se hacen desde varios hilos a la vez pueden quedar trabados esperándose entre sí.
+import netrc  # noqa: F401  (lo usa requests por dentro)
+import openpyxl  # noqa: F401
+
 import bot
 import catalogo
 
@@ -15,6 +20,9 @@ VERIFY_TOKEN = os.environ["VERIFY_TOKEN"]      # la palabra que inventes (igual 
 WA_TOKEN = os.environ["WA_TOKEN"]              # token de acceso de Meta
 PHONE_ID = os.environ["PHONE_NUMBER_ID"]       # Phone Number ID del número de WhatsApp
 GRAPH_URL = f"https://graph.facebook.com/v25.0/{PHONE_ID}/messages"
+
+_http = requests.Session()
+_http.trust_env = False  # no busca .netrc ni proxies del sistema (más rápido y sin sorpresas)
 
 _procesados = deque(maxlen=500)  # Meta a veces reenvía el mismo mensaje: lo ignoramos
 
@@ -29,7 +37,7 @@ def normalizar_ar(numero):
 
 def _graph(payload):
     try:
-        r = requests.post(GRAPH_URL, headers={"Authorization": f"Bearer {WA_TOKEN}"}, json=payload, timeout=15)
+        r = _http.post(GRAPH_URL, headers={"Authorization": f"Bearer {WA_TOKEN}"}, json=payload, timeout=15)
         if r.status_code != 200:
             print("Error de WhatsApp:", r.status_code, r.text[:300], flush=True)
     except Exception as e:
@@ -91,15 +99,24 @@ def recibir():
     return "ok", 200
 
 
+_carga_iniciada = False
+
+
+@app.before_request
 def _carga_inicial():
-    try:
-        catalogo.cargar(forzar=True)
-    except Exception as e:
-        print("No se pudo cargar la lista al arrancar:", repr(e), flush=True)
+    """La lista se empieza a cargar con la primera visita (Render hace una apenas arranca),
+    cuando el servidor ya terminó de iniciarse. Así no hay hilos corriendo mientras se importa."""
+    global _carga_iniciada
+    if not _carga_iniciada:
+        _carga_iniciada = True
 
+        def cargar():
+            try:
+                catalogo.cargar(forzar=True)
+            except Exception as e:
+                print("No se pudo cargar la lista al arrancar:", repr(e), flush=True)
+        threading.Thread(target=cargar, daemon=True).start()
 
-# Cargamos la lista apenas arranca el servidor, así el primer cliente no espera
-threading.Thread(target=_carga_inicial, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

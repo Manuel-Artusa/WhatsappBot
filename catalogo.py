@@ -20,7 +20,11 @@ import threading
 import time
 import unicodedata
 
+import openpyxl
 import requests
+
+_http = requests.Session()
+_http.trust_env = False
 
 LISTA_URL = os.environ.get("LISTA_URL", "")
 REFRESCO_SEG = int(os.environ.get("LISTA_REFRESCO_MIN", "30")) * 60
@@ -72,7 +76,6 @@ def formatear_precio(p):
 
 def _leer_filas(contenido):
     if contenido[:2] == b"PK":  # es un .xlsx
-        import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(contenido), read_only=True, data_only=True)
         ws = wb.worksheets[0]
         return [list(r) for r in ws.iter_rows(min_row=FILA_INICIO, values_only=True)]
@@ -140,7 +143,7 @@ def cargar(forzar=False, contenido=None):
             return
         if contenido is None:
             t0 = time.time()
-            r = requests.get(_url_descarga(LISTA_URL), timeout=(10, 30))
+            r = _http.get(_url_descarga(LISTA_URL), timeout=(10, 30))
             r.raise_for_status()
             contenido = r.content
             print(f"Lista descargada en {time.time() - t0:.1f}s", flush=True)
