@@ -13,6 +13,7 @@ Al cliente NUNCA se le muestran: ubicación, comentarios internos ni costo.
 """
 import csv
 import io
+import math
 import os
 import re
 import threading
@@ -189,12 +190,19 @@ def buscar_por_texto(consulta, tipo_cliente, limite=20):
                 if len(t) >= 2 and not re.fullmatch(r"(19|20)\d\d", t)]
     if not terminos:
         return []
+    # Cada palabra pesa según lo rara que es en la lista: "sandero" pesa mucho, "2.0" o "inyector" poco.
+    n = len(_productos)
+    pesos = {}
+    for t in terminos:
+        df = sum(1 for p in _productos if t in p["_busqueda"])
+        pesos[t] = math.log((n + 1) / (df + 1)) + 0.1
     puntaje = []
     for i, p in enumerate(_productos):
-        # coincidir en la descripción vale 1; solo en la categoría vale 0.5
-        s = sum(1 if t in p["_busqueda"] else 0.5 if t in p["_categoria"] else 0 for t in terminos)
-        if s >= 1:
+        # coincidir en la descripción vale el peso completo; solo en la categoría, la mitad
+        s = sum(pesos[t] if t in p["_busqueda"] else pesos[t] * 0.5 if t in p["_categoria"] else 0
+                for t in terminos)
+        if s > 0:
             puntaje.append((s, i))
     puntaje.sort(key=lambda x: -x[0])
     mejor = puntaje[0][0] if puntaje else 0
-    return [_para_cliente(_productos[i], tipo_cliente) for s, i in puntaje if s >= mejor - 1.5][:limite]
+    return [_para_cliente(_productos[i], tipo_cliente) for s, i in puntaje if s >= mejor * 0.6][:limite]

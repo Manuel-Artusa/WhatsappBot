@@ -1,6 +1,7 @@
 """Cerebro del bot: conversa con Claude y usa la lista de precios como herramienta."""
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -15,10 +16,13 @@ MODELO = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
 NOMBRE_NEGOCIO = os.environ.get("NOMBRE_NEGOCIO", "la casa de repuestos")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+BUSQUEDA_WEB = os.environ.get("BUSQUEDA_WEB", "1") == "1"  # poné 0 en Render para desactivarla
 HORAS_SESION = 12          # después de 12 h sin hablar, la charla arranca de cero
 MAX_MENSAJES_HISTORIAL = 30
 
-cliente_ia = anthropic.Anthropic()  # usa ANTHROPIC_API_KEY
+cliente_ia = anthropic.Anthropic(timeout=45, max_retries=1)  # usa ANTHROPIC_API_KEY
+TIEMPO_MAXIMO = 100  # segundos máximos para armar una respuesta
+AVISO_ESPERA = 8     # si tarda más que esto, le mandamos "dame un toque" al cliente
 _sesiones = {}
 _locks = {}
 _locks_lock = threading.Lock()
@@ -46,7 +50,7 @@ PASO 1: TIPO DE CLIENTE (antes de cualquier búsqueda o precio)
 - Tipo de cliente actual: {tipo}.
 - Si no lo sabés, saludá y preguntá si es casa de repuestos o cliente particular.
 - Si dice que es casa de repuestos, pedile el nombre del negocio (y localidad) antes de seguir.
-- Cuando lo sepas, llamá a registrar_tipo_cliente. Las búsquedas no funcionan hasta que lo registres.
+- Cuando lo sepas, llamá a registrar_tipo_cliente UNA sola vez. Si arriba ya figura el tipo de cliente, NO lo vuelvas a registrar.
 
 PASO 2: BUSCAR EL REPUESTO
 - Pedí el código del producto (el número que tiene grabado la pieza o el código original).
@@ -55,6 +59,7 @@ PASO 2: BUSCAR EL REPUESTO
   - "relacionados" son piezas o kits que mencionan ese código (toberas, válvulas, alternativas). Mencionalos solo si sirven.
   - Si no hay coincidencias: usá web_search para averiguar qué códigos son equivalentes o compatibles con ese (cruces de referencia Bosch, Delphi, Denso, Engine Pro, códigos OEM del fabricante del vehículo). Después buscá cada equivalente con buscar_por_codigo. Si encontrás uno, ofrecelo aclarando que es un equivalente y que un vendedor confirma la compatibilidad.
 - Si no tiene el código: pedile para qué vehículo es (marca, modelo, año, motor) y qué pieza necesita, y usá buscar_por_vehiculo. Probá con términos cortos (ej: "inyector amarok", "turbo hilux 3.0"). Si hay varias opciones, preguntá lo necesario para identificar la correcta (año, motor, Bosch o Denso, etc.).
+- Usá web_search SOLO para buscar equivalencias de un código que no está en la lista. Para búsquedas por vehículo no la uses: si el vehículo no lleva esa pieza (por ejemplo, un motor naftero sin turbo), decíselo o preguntale el motor exacto.
 - Si después de buscar no lo tenemos, decilo con naturalidad y ofrecé que un vendedor lo revise.
 
 PRECIOS Y STOCK
@@ -118,6 +123,14 @@ HERRAMIENTAS = [
 ]
 
 
+def _herramientas(sesion):
+    """Si ya sabemos el tipo de cliente, no le ofrecemos registrarlo de nuevo."""
+    hs = [h for h in HERRAMIENTAS if not (sesion["tipo"] and h["name"] == "registrar_tipo_cliente")]
+    if not BUSQUEDA_WEB:
+        hs = [h for h in hs if h["name"] != "web_search"]
+    return hs
+
+
 def _avisar_vendedor(numero, sesion, resumen):
     texto = f"Nuevo aviso del bot de WhatsApp\nCliente: +{numero}\nTipo: {sesion['tipo']} {sesion['negocio'] or ''}\n\n{resumen}"
     print("PASAR A VENDEDOR:", texto, flush=True)
@@ -161,41 +174,69 @@ def _lock_de(numero):
         return _locks.setdefault(numero, threading.Lock())
 
 
-def responder(numero, texto_usuario):
-    """Recibe el mensaje del cliente y devuelve el texto de respuesta."""
+def _formato_whatsapp(texto):
+    texto = re.sub(r"\*\*(.+?)\*\*", r"*\1*", texto)        # **negrita** -> *negrita*
+    texto = re.sub(r"^#+\s*", "", texto, flags=re.MULTILINE)  # sin títulos markdown
+    return texto.strip()
+
+
+def responder(numero, texto_usuario, avisar=None):
+    """Recibe el mensaje del cliente y devuelve el texto de respuesta.
+    avisar(texto): función opcional para mandar un mensaje intermedio si la respuesta tarda."""
     with _lock_de(numero):  # un mensaje por vez por cliente
         sesion = _sesion(numero)
         mensajes = sesion["historial"] + [{"role": "user", "content": texto_usuario}]
+        inicio = time.time()
+        aviso = None
+        if avisar:
+            aviso = threading.Timer(AVISO_ESPERA, avisar, args=("Dame un toque que lo reviso y te digo.",))
+            aviso.start()
 
-        for _ in range(10):  # tope de vueltas por seguridad
-            r = cliente_ia.messages.create(
-                model=MODELO,
-                max_tokens=1024,
-                system=_prompt_sistema(sesion),
-                tools=HERRAMIENTAS,
-                messages=mensajes,
-            )
-            mensajes.append({"role": "assistant", "content": r.content})
-            if r.stop_reason == "pause_turn":  # la búsqueda web sigue en curso
-                continue
-            if r.stop_reason != "tool_use":
-                break
-            resultados = []
-            for b in r.content:
-                if b.type == "tool_use":
-                    try:
-                        salida = _ejecutar(b.name, b.input, numero, sesion)
-                    except Exception as e:
-                        print("Error en herramienta", b.name, e, flush=True)
-                        salida = {"error": "No se pudo consultar la lista en este momento."}
-                    print(f"[{numero}] {b.name}({b.input})", flush=True)
-                    resultados.append({"type": "tool_result", "tool_use_id": b.id,
-                                       "content": json.dumps(salida, ensure_ascii=False)})
-            mensajes.append({"role": "user", "content": resultados})
+        r = None
+        try:
+            for vuelta in range(10):  # tope de vueltas por seguridad
+                if time.time() - inicio > TIEMPO_MAXIMO:
+                    print(f"[{numero}] Se pasó del tiempo máximo, corto.", flush=True)
+                    r = None
+                    break
+                print(f"[{numero}] Consultando a Claude (vuelta {vuelta + 1})", flush=True)
+                r = cliente_ia.messages.create(
+                    model=MODELO,
+                    max_tokens=1024,
+                    system=_prompt_sistema(sesion),
+                    tools=_herramientas(sesion),
+                    messages=mensajes,
+                )
+                for b in r.content:
+                    if b.type == "server_tool_use":
+                        print(f"[{numero}] Búsqueda web: {b.input}", flush=True)
+                mensajes.append({"role": "assistant", "content": r.content})
+                if r.stop_reason == "pause_turn":  # la búsqueda web sigue en curso
+                    continue
+                if r.stop_reason != "tool_use":
+                    break
+                resultados = []
+                for b in r.content:
+                    if b.type == "tool_use":
+                        print(f"[{numero}] {b.name}({b.input})", flush=True)
+                        try:
+                            salida = _ejecutar(b.name, b.input, numero, sesion)
+                        except Exception as e:
+                            print("Error en herramienta", b.name, e, flush=True)
+                            salida = {"error": "No se pudo consultar la lista en este momento."}
+                        resultados.append({"type": "tool_result", "tool_use_id": b.id,
+                                           "content": json.dumps(salida, ensure_ascii=False)})
+                mensajes.append({"role": "user", "content": resultados})
+        finally:
+            if aviso:
+                aviso.cancel()
 
-        respuesta = "".join(b.text for b in r.content if b.type == "text").strip()
+        respuesta = ""
+        if r is not None and r.stop_reason not in ("tool_use", "pause_turn"):
+            respuesta = _formato_whatsapp("".join(b.text for b in r.content if b.type == "text"))
         if not respuesta:
-            respuesta = "Dame un segundo que lo reviso y te escribo."
+            respuesta = "Lo estoy revisando con un compañero y en un ratito te confirmo."
+            _avisar_vendedor(numero, sesion, f"El bot no pudo resolver esta consulta a tiempo. Último mensaje del cliente: {texto_usuario}")
 
         # En el historial guardamos solo el texto de la charla (sin las búsquedas internas)
         sesion["historial"] += [{"role": "user", "content": texto_usuario},

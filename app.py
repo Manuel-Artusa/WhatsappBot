@@ -50,7 +50,7 @@ def procesar(msg):
     try:
         marcar_leido_y_escribiendo(msg["id"])
         if msg.get("type") == "text":
-            respuesta = bot.responder(numero, msg["text"]["body"])
+            respuesta = bot.responder(numero, msg["text"]["body"], avisar=lambda t: enviar(numero, t))
         else:
             respuesta = "Por ahora solo puedo leer mensajes de texto. ¿Me escribís el código o para qué vehículo es?"
         enviar(numero, respuesta)
