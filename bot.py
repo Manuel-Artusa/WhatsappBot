@@ -132,6 +132,8 @@ PEDIDOS DE ESTE CLIENTE
 {pedidos.resumen_para_cliente(sesion.get("numero", ""))}
 - Si hay un pedido "esperando_pago" y el cliente dice que ya transfirió, pedile que te mande la foto o el PDF del comprobante por acá.
 - Si el cliente te manda una foto que es un comprobante de transferencia o pago, llamá a informar_comprobante (aunque no veas el pedido acá).
+- Si el cliente dice que la foto es el comprobante, llamá igual a informar_comprobante aunque no parezca uno: el vendedor la revisa y decide si es real.
+- NUNCA digas que le pasaste algo a un vendedor si no llamaste a una herramienta que lo hace (informar_comprobante, crear_pedido o pasar_a_vendedor).
 - Si hay un pedido "falta_stock", ayudalo a elegir una alternativa (buscala en la lista) o a seguir sin ese producto, y volvé a llamar a crear_pedido.
 - Si pregunta por su pedido, contale en qué estado está con palabras simples.
 

@@ -430,9 +430,8 @@ def revisar_comprobante(numero, datos, mime, nombre_archivo, texto=""):
     if not bloque:
         return None
     abiertos = pedidos_de(numero)
-    # Solo gastamos en revisar si puede ser un pago: hay un pedido abierto, es un PDF o el texto habla de pago
-    if not (abiertos or mime == "application/pdf" or PALABRAS_PAGO.search(texto or "")):
-        return None
+    # Revisamos todas las fotos y PDF: si el servidor se reinició, el pedido puede no estar en memoria
+    # y aun así la foto puede ser el comprobante.
     p = next((x for x in abiertos if x["estado"] == "esperando_pago"), abiertos[0] if abiertos else None)
     try:
         r = cliente_ia.messages.create(
@@ -448,6 +447,13 @@ def revisar_comprobante(numero, datos, mime, nombre_archivo, texto=""):
                 "observaciones": "no se pudo leer automáticamente"}
     print(f"[{numero}] ¿Es comprobante? {info.get('es_comprobante')} — monto {info.get('monto')}", flush=True)
     if not info.get("es_comprobante"):
+        # Si esperábamos un pago o el cliente dice que es el comprobante, se lo decimos claro
+        # Si esperábamos un pago o el cliente dice que es el comprobante, se lo pasamos igual al
+        # vendedor (él ve la imagen y decide si es real), con un aviso de que no parece un comprobante.
+        if (p and p["estado"] == "esperando_pago") or PALABRAS_PAGO.search(texto or ""):
+            aviso = "OJO: no parece un comprobante de transferencia, revisá la imagen"
+            info["observaciones"] = f"{aviso}. {info['observaciones']}" if info.get("observaciones") else aviso
+            return reenviar_comprobante(numero, datos, mime, nombre_archivo, info, p)
         return None
     return reenviar_comprobante(numero, datos, mime, nombre_archivo, info, p)
 
