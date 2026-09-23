@@ -15,7 +15,7 @@
  * → Versión: "Nueva versión" → Implementar. (La URL sigue siendo la misma.)
  */
 
-const CLAVE = 'CAMBIAME';          // misma palabra que REGISTRO_CLAVE en Render
+const CLAVE = 'ldprueba';          // misma palabra que REGISTRO_CLAVE en Render
 const AGENDAR_EN_GOOGLE = true;    // crea el contacto en tus Contactos de Google (necesita People API)
 const ETIQUETA_CONTACTO = 'Cliente WhatsApp bot';
 
@@ -65,8 +65,8 @@ function doGet(e) {
 function registrarConsulta(d) {
   hoja(HOJA_CONSULTAS).appendRow([
     new Date(), "'" + d.numero, d.nombre || '', d.tipo || '', d.negocio || '', d.pieza || '',
-    d.codigo_pedido || '', d.marca || '', d.modelo || '', d.motor || '', d.anio || '',
-    d.resultado || '', d.codigo_ofrecido || '', d.precio_ofrecido || '', d.notas || '']);
+    texto(d.codigo_pedido), d.marca || '', d.modelo || '', d.motor || '', d.anio || '',
+    d.resultado || '', texto(d.codigo_ofrecido), d.precio_ofrecido || '', d.notas || '']);
   // suma 1 a las consultas del contacto
   const fila = buscarContacto(d.numero);
   if (fila) {
@@ -112,6 +112,12 @@ function agendarEnGoogle(fila) {
   } catch (err) {
     h.getRange(fila, 10).setValue('No (' + String(err).slice(0, 60) + ')');
   }
+}
+
+
+// Guarda como texto (si no, Sheets le saca el 0 inicial a códigos como 0445110183)
+function texto(v) {
+  return v ? "'" + v : '';
 }
 
 
@@ -161,8 +167,18 @@ function preparar() {
     bloques.forEach(([celda, titulo, formula]) => {
       const rango = r.getRange(celda);
       rango.setValue(titulo).setFontWeight('bold').setFontSize(12);
-      rango.offset(1, 0).setFormula(formula);
+      ponerFormula(rango.offset(1, 0), formula);
     });
+  }
+}
+
+
+// Según el idioma de la planilla, las fórmulas separan con "," o con ";". Probamos las dos.
+function ponerFormula(celda, formula) {
+  celda.setFormula(formula);
+  SpreadsheetApp.flush();
+  if (String(celda.getDisplayValue()).indexOf('#ERROR') === 0) {
+    celda.setFormula(formula.replace(/!A:O,"/, '!A:O;"').replace(/",1\)$/, '";1)'));
   }
 }
 
