@@ -82,6 +82,7 @@ PASO 1: TIPO DE CLIENTE (antes de cualquier búsqueda o precio)
 - Tipo de cliente actual: {tipo}.
 - Si no lo sabés, saludá y preguntá si es casa de repuestos o cliente particular.
 - Si dice que es casa de repuestos, pedile el nombre del negocio (y localidad) antes de seguir.
+- Si en el mismo mensaje ya pide un repuesto, buscalo igual (la búsqueda funciona sin precios) y en tu respuesta contale qué hay y preguntá el tipo de cliente.
 - Cuando lo sepas, llamá a registrar_tipo_cliente UNA sola vez. Si arriba ya figura el tipo de cliente, NO lo vuelvas a registrar.
 
 PASO 2: BUSCAR EL REPUESTO
@@ -96,6 +97,7 @@ PASO 2: BUSCAR EL REPUESTO
   - Solo si salen repuestos DISTINTOS según el año o el motor, preguntá el dato puntual que los diferencia, nombrando las opciones (ej: "¿es la 2.5 o la 3.0?"). Nunca pidas año y motor "por las dudas".
   - Si no sabe el vehículo ni la pieza, recién ahí preguntale.
 - Sé directo: respuestas cortas, sin vueltas ni preguntas innecesarias. Si ya tenés la info para cotizar, cotizá.
+- Las opciones de motor, año o versión salen SOLO de los resultados de la búsqueda. Nunca las inventes con lo que sabés de autos.
 - Usá web_search SOLO para buscar equivalencias de un código que no está en la lista. Para búsquedas por vehículo no la uses: si el vehículo no lleva esa pieza (por ejemplo, un motor naftero sin turbo), decíselo o preguntale el motor exacto.
 - Si una búsqueda te devolvió un error, volvé a buscar en el mensaje siguiente antes de derivar a un vendedor. Nunca digas que un vendedor "va a confirmar" si no llamaste a pasar_a_vendedor.
 - Si después de buscar no lo tenemos, decilo con naturalidad y ofrecé que un vendedor lo revise.
@@ -247,7 +249,17 @@ def _ejecutar(nombre, datos, numero, sesion):
         registro.contacto(numero, sesion.get("nombre"), sesion["tipo"], sesion["negocio"])
         return {"ok": True, "nota": "Registrado. No hace falta volver a registrarlo en esta charla."}
     if nombre in ("buscar_por_codigo", "buscar_por_vehiculo") and not sesion["tipo"]:
-        return {"error": "Primero preguntá si es casa de repuestos o particular y llamá a registrar_tipo_cliente."}
+        # Se puede buscar igual, pero sin precios hasta saber si es casa de repuestos o particular
+        if nombre == "buscar_por_codigo":
+            res = catalogo.buscar_por_codigo(datos["codigo"], "particular")
+            filas = res["coincidencias"] + res["relacionados"]
+        else:
+            res = {"resultados": catalogo.buscar_por_texto(datos["consulta"], "particular")}
+            filas = res["resultados"]
+        for f in filas:
+            f["precio"] = "(todavía no: primero preguntá si es casa de repuestos o particular)"
+        res["nota"] = "Contale qué tenemos y preguntale si es casa de repuestos o particular para pasarle el precio."
+        return res
     if nombre == "buscar_por_codigo":
         return catalogo.buscar_por_codigo(datos["codigo"], sesion["tipo"])
     if nombre == "buscar_por_vehiculo":
@@ -351,6 +363,9 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
         sesion["numero"] = numero
         if nombre:
             sesion["nombre"] = nombre
+        if not sesion["tipo"] and re.search(r"\b(particular|consumidor final|cliente final)\b", texto_usuario or "", re.I):
+            sesion["tipo"] = "particular"  # lo dijo el cliente: no hace falta preguntarle
+            print(f"[{numero}] Tipo de cliente detectado: particular", flush=True)
         registro.contacto(numero, sesion.get("nombre"), sesion["tipo"], sesion["negocio"], nuevo_mensaje=True)
         # La foto se guarda un par de mensajes más, por si el bot todavía no pudo buscar
         # (por ejemplo, porque primero tenía que preguntar si es casa de repuestos o particular).
@@ -386,6 +401,7 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
         textos = []  # Claude a veces escribe la respuesta y DESPUÉS registra la consulta: juntamos todo
         busquedas = []  # (herramienta, consulta, ¿encontró algo?) para el registro automático
         registro_manual = False
+        control_usado = False
         try:
             for vuelta in range(10):  # tope de vueltas por seguridad
                 if time.time() - inicio > TIEMPO_MAXIMO:
@@ -408,7 +424,19 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
                 if r.stop_reason == "pause_turn":  # la búsqueda web sigue en curso
                     continue
                 if r.stop_reason != "tool_use":
-                    break
+                    texto_final = " ".join(b.text for b in r.content if b.type == "text")
+                    pregunta_de_mas = (not busquedas and not control_usado and "?" in texto_final
+                                       and re.search(r"\b(año|motor)\b", texto_final, re.I))
+                    if not pregunta_de_mas:
+                        break
+                    # Preguntó año/motor sin buscar: le pedimos que busque primero y descartamos esa respuesta
+                    control_usado = True
+                    textos = []
+                    print(f"[{numero}] Preguntó año/motor sin buscar: le pido que busque primero", flush=True)
+                    mensajes.append({"role": "user", "content": "(Nota interna, el cliente no la ve: no le preguntes año ni motor sin "
+                                     "buscar antes. Si ya nombró un vehículo o una pieza, buscá con buscar_por_vehiculo con eso "
+                                     "y respondé según los resultados. Si no nombró ningún vehículo, respondé como ibas a hacerlo.)"})
+                    continue
                 resultados = []
                 for b in r.content:
                     if b.type == "tool_use":
