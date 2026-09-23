@@ -13,64 +13,24 @@ import openpyxl  # noqa: F401
 
 import bot
 import catalogo
+import pedidos
+import whatsapp
+from whatsapp import enviar, descargar_media, marcar_leido_y_escribiendo
 
 app = Flask(__name__)
 
 VERIFY_TOKEN = os.environ["VERIFY_TOKEN"]      # la palabra que inventes (igual que en Meta)
-WA_TOKEN = os.environ["WA_TOKEN"]              # token de acceso de Meta
-PHONE_ID = os.environ["PHONE_NUMBER_ID"]       # Phone Number ID del número de WhatsApp
-GRAPH_URL = f"https://graph.facebook.com/v25.0/{PHONE_ID}/messages"
 
 # Transcripción de audios (cualquier servicio compatible con la API de OpenAI; por defecto Groq)
 TRANSCRIPCION_API_KEY = os.environ.get("TRANSCRIPCION_API_KEY", "")
 TRANSCRIPCION_URL = os.environ.get("TRANSCRIPCION_URL", "https://api.groq.com/openai/v1/audio/transcriptions")
 TRANSCRIPCION_MODELO = os.environ.get("TRANSCRIPCION_MODELO", "whisper-large-v3-turbo")
 MAX_IMAGEN = 5 * 1024 * 1024  # Claude acepta imágenes de hasta 5 MB
+IMAGENES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 
 _http = requests.Session()
-_http.trust_env = False  # no busca .netrc ni proxies del sistema (más rápido y sin sorpresas)
-
+_http.trust_env = False
 _procesados = deque(maxlen=500)  # Meta a veces reenvía el mismo mensaje: lo ignoramos
-
-
-def normalizar_ar(numero):
-    """Los celulares argentinos llegan como 549XXXXXXXXXX.
-    Para responder, la API a veces necesita el número sin el 9: 54XXXXXXXXXX."""
-    if numero.startswith("549"):
-        return "54" + numero[3:]
-    return numero
-
-
-def _graph(payload):
-    try:
-        r = _http.post(GRAPH_URL, headers={"Authorization": f"Bearer {WA_TOKEN}"}, json=payload, timeout=15)
-        if r.status_code != 200:
-            print("Error de WhatsApp:", r.status_code, r.text[:300], flush=True)
-    except Exception as e:
-        print("No se pudo conectar con WhatsApp:", repr(e)[:200], flush=True)
-
-
-def enviar(to, texto):
-    for i in range(0, len(texto), 4000):  # WhatsApp corta en 4096 caracteres
-        _graph({"messaging_product": "whatsapp", "to": normalizar_ar(to),
-                "type": "text", "text": {"body": texto[i:i + 4000]}})
-
-
-def marcar_leido_y_escribiendo(message_id):
-    """Tildes azules + 'escribiendo...' mientras el bot piensa la respuesta."""
-    _graph({"messaging_product": "whatsapp", "status": "read", "message_id": message_id,
-            "typing_indicator": {"type": "text"}})
-
-
-def descargar_media(media_id):
-    """Baja una foto o audio que mandó el cliente. Devuelve (bytes, tipo_mime)."""
-    h = {"Authorization": f"Bearer {WA_TOKEN}"}
-    info = _http.get(f"https://graph.facebook.com/v25.0/{media_id}", headers=h, timeout=15)
-    info.raise_for_status()
-    info = info.json()
-    archivo = _http.get(info["url"], headers=h, timeout=30)
-    archivo.raise_for_status()
-    return archivo.content, info.get("mime_type", "application/octet-stream").split(";")[0]
 
 
 def transcribir(datos, mime):
@@ -86,41 +46,78 @@ def transcribir(datos, mime):
     return r.json().get("text", "").strip()
 
 
+def _texto_de_audio(msg):
+    if not TRANSCRIPCION_API_KEY:
+        return None
+    datos, mime = descargar_media(msg["audio"]["id"])
+    texto = transcribir(datos, mime)
+    print(f"[{msg['from']}] Audio transcripto: {texto}", flush=True)
+    return texto
+
+
+def _archivo(msg, tipo):
+    """(datos, mime, nombre_archivo, texto_que_lo_acompaña) de una foto o documento."""
+    parte = msg[tipo]
+    datos, mime = descargar_media(parte["id"])
+    nombre = parte.get("filename") or ("foto.jpg" if tipo == "image" else "archivo.pdf")
+    return datos, mime, nombre, parte.get("caption", "")
+
+
+def procesar_vendedor(msg):
+    numero, tipo = msg["from"], msg.get("type")
+    if tipo == "text":
+        respuesta = pedidos.mensaje_vendedor(numero, msg["text"]["body"])
+    elif tipo in ("image", "document"):
+        datos, mime, nombre, texto = _archivo(msg, tipo)
+        print(f"[vendedor] Archivo recibido: {nombre} ({mime}, {len(datos) // 1024} KB)", flush=True)
+        respuesta = pedidos.mensaje_vendedor(numero, texto, archivo=(datos, mime, nombre))
+    elif tipo == "audio":
+        texto = _texto_de_audio(msg)
+        respuesta = pedidos.mensaje_vendedor(numero, texto) if texto else "No pude escuchar el audio, escribime."
+    else:
+        respuesta = "Mandame texto, la factura en PDF o foto, o un audio."
+    enviar(numero, respuesta)
+
+
+def procesar_cliente(msg, nombre):
+    numero, tipo = msg["from"], msg.get("type")
+    avisar = lambda t: enviar(numero, t)  # noqa: E731
+
+    if tipo == "text":
+        return bot.responder(numero, msg["text"]["body"], avisar=avisar, nombre=nombre)
+
+    if tipo in ("image", "document"):
+        datos, mime, nombre_archivo, texto = _archivo(msg, tipo)
+        print(f"[{numero}] {'Foto recibida' if tipo == 'image' else 'Documento recibido'} ({len(datos) // 1024} KB) {texto}", flush=True)
+        # ¿Es el comprobante de un pedido que está esperando el pago?
+        respuesta = pedidos.revisar_comprobante(numero, datos, mime, nombre_archivo)
+        if respuesta:
+            bot.nota_en_charla(numero, respuesta)
+            return respuesta
+        if mime in IMAGENES and len(datos) <= MAX_IMAGEN:
+            return bot.responder(numero, texto, avisar=avisar, imagen=(datos, mime), nombre=nombre)
+        return "No pude abrir bien ese archivo. ¿Me mandás una foto, o me escribís el código?"
+
+    if tipo == "audio":
+        if not TRANSCRIPCION_API_KEY:
+            return "Perdón, por acá no puedo escuchar audios. ¿Me lo escribís?"
+        texto = _texto_de_audio(msg)
+        if not texto:
+            return "No llegué a entender el audio. ¿Me lo escribís?"
+        return bot.responder(numero, f"(Audio transcripto) {texto}", avisar=avisar, nombre=nombre)
+
+    return "Por ahora puedo leer mensajes de texto, fotos y audios. ¿Me escribís el código o para qué vehículo es?"
+
+
 def procesar(msg, nombre=None):
     numero = msg["from"]
-    avisar = lambda t: enviar(numero, t)  # noqa: E731
     try:
         marcar_leido_y_escribiendo(msg["id"])
-        tipo = msg.get("type")
-
-        if tipo == "text":
-            respuesta = bot.responder(numero, msg["text"]["body"], avisar=avisar, nombre=nombre)
-
-        elif tipo == "image":
-            datos, mime = descargar_media(msg["image"]["id"])
-            if len(datos) > MAX_IMAGEN or mime not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
-                respuesta = "No pude abrir bien esa foto. ¿Me la mandás de nuevo, o me escribís el código?"
-            else:
-                texto = msg["image"].get("caption", "")
-                print(f"[{numero}] Foto recibida ({len(datos) // 1024} KB) {texto}", flush=True)
-                respuesta = bot.responder(numero, texto, avisar=avisar, imagen=(datos, mime), nombre=nombre)
-
-        elif tipo == "audio":
-            if not TRANSCRIPCION_API_KEY:
-                respuesta = "Perdón, por acá no puedo escuchar audios. ¿Me lo escribís?"
-            else:
-                datos, mime = descargar_media(msg["audio"]["id"])
-                texto = transcribir(datos, mime)
-                print(f"[{numero}] Audio transcripto: {texto}", flush=True)
-                if texto:
-                    respuesta = bot.responder(numero, f"(Audio transcripto) {texto}", avisar=avisar, nombre=nombre)
-                else:
-                    respuesta = "No llegué a entender el audio. ¿Me lo escribís?"
-
+        whatsapp.entregar_pendientes(numero)  # lo que no se le pudo mandar antes (pasaron 24 h)
+        if pedidos.es_vendedor(numero):
+            procesar_vendedor(msg)
         else:
-            respuesta = "Por ahora puedo leer mensajes de texto, fotos y audios. ¿Me escribís el código o para qué vehículo es?"
-
-        enviar(numero, respuesta)
+            enviar(numero, procesar_cliente(msg, nombre))
     except Exception as e:
         print("Error procesando mensaje:", repr(e), flush=True)
         traceback.print_exc()
@@ -163,7 +160,7 @@ _carga_iniciada = False
 
 @app.before_request
 def _carga_inicial():
-    """La lista se empieza a cargar con la primera visita (Render hace una apenas arranca),
+    """La lista y los pedidos abiertos se cargan con la primera visita (Render hace una apenas arranca),
     cuando el servidor ya terminó de iniciarse. Así no hay hilos corriendo mientras se importa."""
     global _carga_iniciada
     if not _carga_iniciada:
@@ -174,6 +171,10 @@ def _carga_inicial():
                 catalogo.cargar(forzar=True)
             except Exception as e:
                 print("No se pudo cargar la lista al arrancar:", repr(e), flush=True)
+            try:
+                pedidos.pedidos_de("0")  # trae de la planilla los pedidos abiertos
+            except Exception as e:
+                print("No se pudieron cargar los pedidos:", repr(e), flush=True)
         threading.Thread(target=cargar, daemon=True).start()
 
 

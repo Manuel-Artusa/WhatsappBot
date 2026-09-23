@@ -53,3 +53,20 @@ def contacto(numero, nombre="", tipo="", negocio="", nuevo_mensaje=False):
 def consulta(numero, sesion, datos):
     _en_segundo_plano({"accion": "consulta", "numero": numero, "nombre": sesion.get("nombre") or "",
                        "tipo": sesion.get("tipo") or "", "negocio": sesion.get("negocio") or "", **datos})
+
+
+def guardar_pedido(pedido):
+    _en_segundo_plano({"accion": "pedido_guardar", "pedido": pedido})
+
+
+def pedidos_abiertos():
+    """Trae de la planilla los pedidos que no están entregados ni cancelados (para no perderlos
+    si el servidor se reinicia). Devuelve [] si no hay planilla o si falla."""
+    if not REGISTRO_URL:
+        return []
+    try:
+        r = _http.post(REGISTRO_URL, json={"accion": "pedidos_abiertos", "clave": REGISTRO_CLAVE}, timeout=30)
+        return r.json().get("pedidos", []) or []
+    except Exception as e:
+        print("No se pudieron leer los pedidos de la planilla:", repr(e)[:200], flush=True)
+        return []

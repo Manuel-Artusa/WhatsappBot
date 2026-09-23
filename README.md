@@ -24,8 +24,18 @@ o busca por vehículo si no tiene el código. Toma datos de factura y envío y a
 | `TRANSCRIPCION_API_KEY` | (opcional) clave de Groq (console.groq.com) para entender audios |
 | `TRANSCRIPCION_URL`, `TRANSCRIPCION_MODELO` | (opcional) para usar otro servicio de transcripción compatible con OpenAI |
 | `REGISTRO_URL`, `REGISTRO_CLAVE` | (opcional) planilla de Google Sheets donde se guardan consultas y contactos (ver `google_apps_script.js`) |
+| `VENDEDORES` | número(s) de WhatsApp de los vendedores, separados por coma (ej: `5493512047539`) |
+| `PLANTILLA_AVISO`, `PLANTILLA_IDIOMA` | (opcional) plantilla aprobada de WhatsApp para avisar a alguien que no escribió en las últimas 24 h |
 | `BUSQUEDA_WEB` | (opcional) `0` para que no busque equivalencias en Google |
 
 ## Deploy en Render
 - Build Command: `pip install -r requirements.txt`
 - Start Command: `gunicorn app:app`
+
+## Pedidos (pedidos.py)
+1. El cliente confirma → el bot le manda el pedido al vendedor (con la ubicación de cada producto).
+2. El vendedor responde "P-1234 ok" o "P-1234 no hay stock de ..." (en sus palabras).
+3. El vendedor manda la factura (PDF o foto) → el bot se la reenvía al cliente con las cuentas de `datos_pago.txt`.
+4. El cliente manda el comprobante → el bot se lo reenvía al vendedor con qué preparar y dónde está.
+5. El vendedor avisa "P-1234 entregado" → se cierra.
+Todo queda en la pestaña Pedidos de la planilla.

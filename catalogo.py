@@ -163,6 +163,7 @@ def cargar(forzar=False, contenido=None):
                 "codigos": codigos,
                 "nro_sistema": nro_sistema,
                 "descripcion": descripcion,
+                "ubicacion": _texto(f[2]),  # interno: nunca se le muestra al cliente
                 "precio_taller": _numero(f[8]),
                 "precio_particular": _numero(f[9]),
                 "categoria": _texto(f[10]),
@@ -255,3 +256,18 @@ def buscar_por_texto(consulta, tipo_cliente, limite=20):
     puntaje.sort(key=lambda x: -x[0])
     mejor = puntaje[0][0] if puntaje else 0
     return [_para_cliente(_productos[i], tipo_cliente) for s, i in puntaje if s >= mejor * 0.6][:limite]
+
+
+def datos_internos(codigo):
+    """Para el vendedor (nunca para el cliente): código de facturación (NRO SISTEMA) y ubicación."""
+    asegurar_cargada()
+    q = normalizar_codigo(codigo)
+    if len(q) < 3:
+        return {"codigo_fact": "", "ubicacion": ""}
+    idxs = list(dict.fromkeys(_buscar_en(_indice_codigos, q)))
+    unir = lambda campo: " / ".join(dict.fromkeys(_productos[i][campo] for i in idxs if _productos[i].get(campo)))
+    return {"codigo_fact": unir("nro_sistema"), "ubicacion": unir("ubicacion")}
+
+
+def ubicacion_de(codigo):
+    return datos_internos(codigo)["ubicacion"]

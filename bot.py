@@ -14,6 +14,7 @@ import anthropic
 import requests
 
 import catalogo
+import pedidos
 import registro
 
 _http = requests.Session()
@@ -111,8 +112,18 @@ REGISTRO INTERNO (el cliente no lo ve, nunca se lo menciones)
 - Cada vez que resuelvas un repuesto que pidió el cliente (lo tengamos o no), llamá a registrar_consulta UNA vez por ese repuesto, con todos los datos que sepas: pieza, código pedido, marca, modelo, motor, año, si lo teníamos, y lo que ofreciste. Si después el cliente te da más datos del mismo repuesto, no lo registres de nuevo.
 
 PASO 3: SI QUIERE COMPRAR
+- Confirmá con el cliente qué productos lleva y cuántos de cada uno.
 - Pedí los datos de facturación (nombre o razón social, CUIT o DNI, condición frente al IVA) y de envío (dirección, localidad, código postal y transporte que prefiere, o si retira).
-- Con esos datos, llamá a pasar_a_vendedor con un resumen del pedido, y avisale que un vendedor le confirma stock y el total.
+- Con todo eso, llamá a crear_pedido. El bot se lo manda a un vendedor que revisa el stock y después arma la factura.
+- Decile al cliente que un vendedor revisa el stock y que le vas a mandar la factura y los datos para transferir. NUNCA le pases cuentas bancarias ni datos de pago vos: se mandan solos junto con la factura.
+- Si el cliente cambia algo antes de que llegue la factura (saca o agrega productos), volvé a llamar a crear_pedido con el pedido completo corregido.
+- Para consultas que no son un pedido (precio "a pedido", algo que no sabés), usá pasar_a_vendedor.
+
+PEDIDOS DE ESTE CLIENTE
+{pedidos.resumen_para_cliente(sesion.get("numero", ""))}
+- Si hay un pedido "esperando_pago" y el cliente dice que ya transfirió, pedile que te mande la foto o el PDF del comprobante por acá.
+- Si hay un pedido "falta_stock", ayudalo a elegir una alternativa (buscala en la lista) o a seguir sin ese producto, y volvé a llamar a crear_pedido.
+- Si pregunta por su pedido, contale en qué estado está con palabras simples.
 
 HORARIO
 - Ahora es {DIAS[ahora.weekday()]} {ahora:%d/%m %H:%M}. La atención de vendedores es de lunes a viernes de 9 a 13 y de 14 a 18.
@@ -152,8 +163,27 @@ HERRAMIENTAS = [
         },
     },
     {
+        "name": "crear_pedido",
+        "description": "Manda el pedido confirmado por el cliente a un vendedor para revisar stock y facturar.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": {"type": "object", "properties": {
+                    "codigo": {"type": "string", "description": "Código principal del producto, como figura en la lista"},
+                    "descripcion": {"type": "string", "description": "Descripción corta, ej: Válvula reguladora Bosch Peugeot 307 2.0 HDI"},
+                    "cantidad": {"type": "integer"},
+                    "precio_unitario": {"type": "string", "description": "Precio que le pasaste, ej: $189.581"}},
+                    "required": ["codigo", "descripcion", "cantidad"]}},
+                "datos_factura": {"type": "string", "description": "Nombre o razón social, CUIT/DNI, condición frente al IVA"},
+                "envio": {"type": "string", "description": "Retira en el local, o dirección, localidad, CP y transporte"},
+                "notas": {"type": "string"},
+            },
+            "required": ["items", "datos_factura", "envio"],
+        },
+    },
+    {
         "name": "pasar_a_vendedor",
-        "description": "Avisa a un vendedor humano: pedido listo, precio a consultar o consulta que no se pudo resolver.",
+        "description": "Avisa a un vendedor humano de una consulta que no es un pedido: precio a consultar, algo que no sabés o no se pudo resolver.",
         "input_schema": {
             "type": "object",
             "properties": {"resumen": {"type": "string", "description": "Qué necesita el cliente, productos, datos de factura y envío"}},
@@ -219,8 +249,11 @@ def _ejecutar(nombre, datos, numero, sesion):
     if nombre == "registrar_consulta":
         registro.consulta(numero, sesion, datos)
         return {"ok": True}
+    if nombre == "crear_pedido":
+        return pedidos.crear(numero, sesion, datos)
     if nombre == "pasar_a_vendedor":
         _avisar_vendedor(numero, sesion, datos["resumen"])
+        pedidos.derivar_consulta(numero, sesion, datos["resumen"])
         return {"ok": True}
     return {"error": f"herramienta desconocida: {nombre}"}
 
@@ -246,6 +279,19 @@ def _ejecutar_con_tope(nombre, datos, numero, sesion, tope=15):
     return res["salida"]
 
 
+def _guardar_pendiente(numero, sesion):
+    p = sesion.pop("pendiente", None)
+    if p:
+        p["timer"].cancel()
+        registro.consulta(numero, sesion, p["datos"])
+
+
+def _descartar_pendiente(sesion):
+    p = sesion.pop("pendiente", None)
+    if p:
+        p["timer"].cancel()
+
+
 def _sesion(numero):
     s = _sesiones.get(numero)
     if not s or time.time() - s["ultima"] > HORAS_SESION * 3600:
@@ -258,6 +304,22 @@ def _sesion(numero):
 def _lock_de(numero):
     with _locks_lock:
         return _locks.setdefault(numero, threading.Lock())
+
+
+def nota_en_charla(numero, texto):
+    """Lo que se le manda al cliente por fuera de la charla (avisos del pedido) queda en su historial,
+    así Claude sabe qué se le dijo."""
+    with _lock_de(numero):
+        s = _sesion(numero)
+        if not s["historial"]:
+            s["historial"].append({"role": "user", "content": "(el cliente tiene un pedido en curso)"})
+        if s["historial"][-1]["role"] == "assistant":
+            s["historial"][-1]["content"] += "\n\n" + texto
+        else:
+            s["historial"].append({"role": "assistant", "content": texto})
+
+
+pedidos.al_avisar_cliente = nota_en_charla
 
 
 def _formato_whatsapp(texto):
@@ -278,6 +340,7 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
 
     with _lock_de(numero):  # un mensaje por vez por cliente
         sesion = _sesion(numero)
+        sesion["numero"] = numero
         if nombre:
             sesion["nombre"] = nombre
         registro.contacto(numero, sesion.get("nombre"), sesion["tipo"], sesion["negocio"], nuevo_mensaje=True)
@@ -357,15 +420,24 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
                 mensajes.append({"role": "user", "content": resultados})
         finally:
             faulthandler.cancel_dump_traceback_later()
-            # Si Claude buscó pero se olvidó de registrar la consulta, la guardamos igual (más básica)
-            if busquedas and not registro_manual:
-                herramienta, consulta, encontro = busquedas[-1]
-                registro.consulta(numero, sesion, {
+            # Si Claude buscó pero todavía no registró la consulta, dejamos un registro "pendiente".
+            # Si en los próximos mensajes Claude la registra (con más datos), el pendiente se descarta.
+            # Si no, se guarda solo a los 10 minutos o cuando el cliente pregunta por otra cosa.
+            if registro_manual:
+                _descartar_pendiente(sesion)
+            elif busquedas:
+                _guardar_pendiente(numero, sesion)  # el anterior era de otro repuesto
+                herramienta, consulta, _ = busquedas[-1]
+                datos = {
                     "pieza": consulta if herramienta == "buscar_por_vehiculo" else "",
                     "codigo_pedido": consulta if herramienta == "buscar_por_codigo" else "",
                     "resultado": "lo tenemos" if any(e for _, _, e in busquedas) else "no lo tenemos",
                     "notas": "registro automático: " + " | ".join(c for _, c, _ in busquedas),
-                })
+                }
+                t = threading.Timer(600, _guardar_pendiente, args=(numero, sesion))
+                t.daemon = True
+                sesion["pendiente"] = {"datos": datos, "timer": t}
+                t.start()
             if aviso:
                 aviso.cancel()
 
@@ -378,5 +450,7 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
         sesion["historial"] += [{"role": "user", "content": texto_historial},
                                 {"role": "assistant", "content": respuesta}]
         sesion["historial"] = sesion["historial"][-MAX_MENSAJES_HISTORIAL:]
+        while sesion["historial"] and sesion["historial"][0]["role"] != "user":
+            sesion["historial"].pop(0)  # la charla tiene que empezar con un mensaje del cliente
         print(f"[{numero}] Respuesta: {respuesta[:300]}", flush=True)
         return respuesta

@@ -22,6 +22,10 @@ const ETIQUETA_CONTACTO = 'Cliente WhatsApp bot';
 const HOJA_CONSULTAS = 'Consultas';
 const HOJA_CONTACTOS = 'Contactos';
 const HOJA_RESUMEN = 'Resumen';
+const HOJA_PEDIDOS = 'Pedidos';
+const COLS_PEDIDOS = ['Pedido', 'Fecha', 'Estado', 'Número', 'Nombre', 'Tipo cliente', 'Productos',
+  'Total', 'Datos factura', 'Envío / retiro', 'Última actualización', 'datos (no tocar)'];
+const ESTADOS_CERRADOS = ['entregado', 'cancelado'];
 
 const COLS_CONSULTAS = ['Fecha', 'Número', 'Nombre', 'Tipo cliente', 'Negocio', 'Pieza', 'Código pedido',
   'Marca', 'Modelo', 'Motor', 'Año', '¿Teníamos?', 'Código ofrecido', 'Precio ofrecido', 'Notas'];
@@ -39,6 +43,8 @@ function doPost(e) {
     preparar();
     if (datos.accion === 'consulta') registrarConsulta(datos);
     if (datos.accion === 'contacto') registrarContacto(datos);
+    if (datos.accion === 'pedido_guardar') guardarPedido(datos.pedido);
+    if (datos.accion === 'pedidos_abiertos') return respuesta({ ok: true, pedidos: pedidosAbiertos() });
     return respuesta({ ok: true });
   } finally {
     lock.releaseLock();
@@ -59,6 +65,38 @@ function doGet(e) {
     'END:VCARD'].join('\n')).join('\n');
   return ContentService.createTextOutput(vcf).setMimeType(ContentService.MimeType.VCARD)
     .downloadAsFile('contactos_bot.vcf');
+}
+
+
+// Un pedido por fila. Si ya existe (mismo número de pedido), se actualiza.
+function guardarPedido(p) {
+  const h = hoja(HOJA_PEDIDOS);
+  const productos = (p.items || []).map(i =>
+    `${i.cantidad || 1}x ${i.codigo || ''} ${i.descripcion || ''} ${i.precio_unitario || ''}`.trim()).join('\n');
+  const fila = [p.id, p.fecha || new Date(), p.estado, "'" + p.numero, p.nombre || '', p.tipo || '', productos,
+    p.total || '', p.datos_factura || '', p.envio || '', new Date(), JSON.stringify(p)];
+  const n = h.getLastRow();
+  if (n >= 2) {
+    const ids = h.getRange(2, 1, n - 1, 1).getValues();
+    for (let i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]) === String(p.id)) {
+        fila[1] = h.getRange(i + 2, 2).getValue();  // conserva la fecha original
+        h.getRange(i + 2, 1, 1, fila.length).setValues([fila]);
+        return;
+      }
+    }
+  }
+  h.appendRow(fila);
+}
+
+
+function pedidosAbiertos() {
+  const h = hoja(HOJA_PEDIDOS);
+  if (h.getLastRow() < 2) return [];
+  return h.getRange(2, 1, h.getLastRow() - 1, COLS_PEDIDOS.length).getValues()
+    .filter(f => f[0] && ESTADOS_CERRADOS.indexOf(String(f[2])) === -1)
+    .map(f => { try { return JSON.parse(f[11]); } catch (e) { return null; } })
+    .filter(p => p);
 }
 
 
@@ -149,6 +187,7 @@ function preparar() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   crearHoja(ss, HOJA_CONSULTAS, COLS_CONSULTAS);
   crearHoja(ss, HOJA_CONTACTOS, COLS_CONTACTOS);
+  crearHoja(ss, HOJA_PEDIDOS, COLS_PEDIDOS);
   if (!ss.getSheetByName(HOJA_RESUMEN)) {
     const r = ss.insertSheet(HOJA_RESUMEN, 0);
     const C = HOJA_CONSULTAS;

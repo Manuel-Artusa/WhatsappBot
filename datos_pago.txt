@@ -1,0 +1,16 @@
+# Cuentas para transferir: el bot las manda al cliente junto con la factura.
+# Editalo cuando cambien (las líneas que empiezan con # no se mandan).
+
+*Costamagna Carlos Alberto*
+CUIT 20-25781711-4
+Banco ICBC
+Alias: *LAUTARODIESEL1*
+CC 0804/02105835/82
+CBU 0150804602000105835828
+
+*Costamagna Carlos Alberto*
+CUIT 20-25781711-4
+Banco Patagonia
+Alias: *LAUTARODIESEL*
+CC Suc 355 Cta 68019267
+CBU 0340355400068019267005
