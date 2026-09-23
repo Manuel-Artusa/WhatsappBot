@@ -21,6 +21,9 @@ o busca por vehículo si no tiene el código. Toma datos de factura y envío y a
 | `CLAUDE_MODEL` | (opcional) modelo, por defecto `claude-sonnet-4-5` |
 | `LISTA_REFRESCO_MIN` | (opcional) cada cuántos minutos relee la lista, por defecto 30 |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | (opcional) para recibir avisos de pedidos por Telegram |
+| `TRANSCRIPCION_API_KEY` | (opcional) clave de Groq (console.groq.com) para entender audios |
+| `TRANSCRIPCION_URL`, `TRANSCRIPCION_MODELO` | (opcional) para usar otro servicio de transcripción compatible con OpenAI |
+| `BUSQUEDA_WEB` | (opcional) `0` para que no busque equivalencias en Google |
 
 ## Deploy en Render
 - Build Command: `pip install -r requirements.txt`

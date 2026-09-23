@@ -1,4 +1,5 @@
 """Cerebro del bot: conversa con Claude y usa la lista de precios como herramienta."""
+import base64
 import faulthandler
 import json
 import sys
@@ -67,6 +68,12 @@ PASO 2: BUSCAR EL REPUESTO
 - Si no tiene el código: pedile para qué vehículo es (marca, modelo, año, motor) y qué pieza necesita, y usá buscar_por_vehiculo. Probá con términos cortos (ej: "inyector amarok", "turbo hilux 3.0"). Si hay varias opciones, preguntá lo necesario para identificar la correcta (año, motor, Bosch o Denso, etc.).
 - Usá web_search SOLO para buscar equivalencias de un código que no está en la lista. Para búsquedas por vehículo no la uses: si el vehículo no lleva esa pieza (por ejemplo, un motor naftero sin turbo), decíselo o preguntale el motor exacto.
 - Si después de buscar no lo tenemos, decilo con naturalidad y ofrecé que un vendedor lo revise.
+- NUNCA digas que no tenemos algo, ni inventes políticas del negocio, sin haber buscado antes. En la lista hay productos "USADO PROBADO" (usados y probados, más baratos) además de nuevos: si preguntan por usados, buscá con buscar_por_vehiculo agregando "usado" (ej: "usado inyector a3").
+- Cuando ofrezcas un producto, nombralo con el código principal que figura en "codigos" y, si ayuda, el código original del auto que aparece en la descripción.
+
+FOTOS Y AUDIOS
+- Si el cliente manda una foto, buscá el código grabado o impreso en la pieza o la etiqueta (ej: Bosch 0 445 110 183, Denso 095000-7760, Delphi, código OEM) y buscalo con buscar_por_codigo. Si no se lee bien, pedile otra foto más de cerca y con buena luz. Si la foto es del vehículo o de otra cosa, usala para entender qué necesita.
+- Los audios te llegan transcriptos y pueden tener errores, sobre todo en los códigos. Si el código de un audio no aparece, repetíselo al cliente para confirmarlo o pedile que lo escriba.
 
 PRECIOS Y STOCK
 - Usá SOLO los precios que devuelven las herramientas. Nunca inventes ni estimes un precio.
@@ -207,12 +214,25 @@ def _formato_whatsapp(texto):
     return texto.strip()
 
 
-def responder(numero, texto_usuario, avisar=None):
+def responder(numero, texto_usuario, avisar=None, imagen=None):
     """Recibe el mensaje del cliente y devuelve el texto de respuesta.
-    avisar(texto): función opcional para mandar un mensaje intermedio si la respuesta tarda."""
+    avisar(texto): función opcional para mandar un mensaje intermedio si la respuesta tarda.
+    imagen: (bytes, tipo_mime) si el cliente mandó una foto."""
     with _lock_de(numero):  # un mensaje por vez por cliente
         sesion = _sesion(numero)
-        mensajes = sesion["historial"] + [{"role": "user", "content": texto_usuario}]
+        if imagen:
+            datos, mime = imagen
+            contenido = [
+                {"type": "image", "source": {"type": "base64", "media_type": mime,
+                                             "data": base64.standard_b64encode(datos).decode()}},
+                {"type": "text", "text": texto_usuario or "(El cliente mandó esta foto, sin texto.)"},
+            ]
+            # en el historial guardamos solo una nota, no la foto entera
+            texto_historial = f"[Mandó una foto] {texto_usuario}".strip()
+        else:
+            contenido = texto_usuario
+            texto_historial = texto_usuario
+        mensajes = sesion["historial"] + [{"role": "user", "content": contenido}]
         inicio = time.time()
         aviso = None
         if avisar:
@@ -266,7 +286,7 @@ def responder(numero, texto_usuario, avisar=None):
             _avisar_vendedor(numero, sesion, f"El bot no pudo resolver esta consulta a tiempo. Último mensaje del cliente: {texto_usuario}")
 
         # En el historial guardamos solo el texto de la charla (sin las búsquedas internas)
-        sesion["historial"] += [{"role": "user", "content": texto_usuario},
+        sesion["historial"] += [{"role": "user", "content": texto_historial},
                                 {"role": "assistant", "content": respuesta}]
         sesion["historial"] = sesion["historial"][-MAX_MENSAJES_HISTORIAL:]
         print(f"[{numero}] Respuesta: {respuesta[:300]}", flush=True)

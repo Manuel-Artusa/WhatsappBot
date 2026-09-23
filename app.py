@@ -21,6 +21,12 @@ WA_TOKEN = os.environ["WA_TOKEN"]              # token de acceso de Meta
 PHONE_ID = os.environ["PHONE_NUMBER_ID"]       # Phone Number ID del número de WhatsApp
 GRAPH_URL = f"https://graph.facebook.com/v25.0/{PHONE_ID}/messages"
 
+# Transcripción de audios (cualquier servicio compatible con la API de OpenAI; por defecto Groq)
+TRANSCRIPCION_API_KEY = os.environ.get("TRANSCRIPCION_API_KEY", "")
+TRANSCRIPCION_URL = os.environ.get("TRANSCRIPCION_URL", "https://api.groq.com/openai/v1/audio/transcriptions")
+TRANSCRIPCION_MODELO = os.environ.get("TRANSCRIPCION_MODELO", "whisper-large-v3-turbo")
+MAX_IMAGEN = 5 * 1024 * 1024  # Claude acepta imágenes de hasta 5 MB
+
 _http = requests.Session()
 _http.trust_env = False  # no busca .netrc ni proxies del sistema (más rápido y sin sorpresas)
 
@@ -56,14 +62,64 @@ def marcar_leido_y_escribiendo(message_id):
             "typing_indicator": {"type": "text"}})
 
 
+def descargar_media(media_id):
+    """Baja una foto o audio que mandó el cliente. Devuelve (bytes, tipo_mime)."""
+    h = {"Authorization": f"Bearer {WA_TOKEN}"}
+    info = _http.get(f"https://graph.facebook.com/v25.0/{media_id}", headers=h, timeout=15)
+    info.raise_for_status()
+    info = info.json()
+    archivo = _http.get(info["url"], headers=h, timeout=30)
+    archivo.raise_for_status()
+    return archivo.content, info.get("mime_type", "application/octet-stream").split(";")[0]
+
+
+def transcribir(datos, mime):
+    r = _http.post(
+        TRANSCRIPCION_URL,
+        headers={"Authorization": f"Bearer {TRANSCRIPCION_API_KEY}"},
+        files={"file": ("audio.ogg", datos, mime)},
+        data={"model": TRANSCRIPCION_MODELO, "language": "es",
+              "prompt": "Repuestos diesel: inyector, tobera, bomba, turbo, common rail, Bosch, Denso, Delphi, código."},
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json().get("text", "").strip()
+
+
 def procesar(msg):
     numero = msg["from"]
+    avisar = lambda t: enviar(numero, t)  # noqa: E731
     try:
         marcar_leido_y_escribiendo(msg["id"])
-        if msg.get("type") == "text":
-            respuesta = bot.responder(numero, msg["text"]["body"], avisar=lambda t: enviar(numero, t))
+        tipo = msg.get("type")
+
+        if tipo == "text":
+            respuesta = bot.responder(numero, msg["text"]["body"], avisar=avisar)
+
+        elif tipo == "image":
+            datos, mime = descargar_media(msg["image"]["id"])
+            if len(datos) > MAX_IMAGEN or mime not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+                respuesta = "No pude abrir bien esa foto. ¿Me la mandás de nuevo, o me escribís el código?"
+            else:
+                texto = msg["image"].get("caption", "")
+                print(f"[{numero}] Foto recibida ({len(datos) // 1024} KB) {texto}", flush=True)
+                respuesta = bot.responder(numero, texto, avisar=avisar, imagen=(datos, mime))
+
+        elif tipo == "audio":
+            if not TRANSCRIPCION_API_KEY:
+                respuesta = "Perdón, por acá no puedo escuchar audios. ¿Me lo escribís?"
+            else:
+                datos, mime = descargar_media(msg["audio"]["id"])
+                texto = transcribir(datos, mime)
+                print(f"[{numero}] Audio transcripto: {texto}", flush=True)
+                if texto:
+                    respuesta = bot.responder(numero, f"(Audio transcripto) {texto}", avisar=avisar)
+                else:
+                    respuesta = "No llegué a entender el audio. ¿Me lo escribís?"
+
         else:
-            respuesta = "Por ahora solo puedo leer mensajes de texto. ¿Me escribís el código o para qué vehículo es?"
+            respuesta = "Por ahora puedo leer mensajes de texto, fotos y audios. ¿Me escribís el código o para qué vehículo es?"
+
         enviar(numero, respuesta)
     except Exception as e:
         print("Error procesando mensaje:", repr(e), flush=True)
