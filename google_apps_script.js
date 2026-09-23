@@ -15,7 +15,7 @@
  * → Versión: "Nueva versión" → Implementar. (La URL sigue siendo la misma.)
  */
 
-const CLAVE = 'ldprueba';          // misma palabra que REGISTRO_CLAVE en Render
+const CLAVE = 'CAMBIAME';          // misma palabra que REGISTRO_CLAVE en Render
 const AGENDAR_EN_GOOGLE = true;    // crea el contacto en tus Contactos de Google (necesita People API)
 const ETIQUETA_CONTACTO = 'Cliente WhatsApp bot';
 

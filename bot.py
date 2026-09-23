@@ -313,6 +313,8 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
         faulthandler.dump_traceback_later(30, repeat=False, file=sys.stderr)
         r = None
         textos = []  # Claude a veces escribe la respuesta y DESPUÉS registra la consulta: juntamos todo
+        busquedas = []  # (herramienta, consulta, ¿encontró algo?) para el registro automático
+        registro_manual = False
         try:
             for vuelta in range(10):  # tope de vueltas por seguridad
                 if time.time() - inicio > TIEMPO_MAXIMO:
@@ -342,6 +344,11 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
                         print(f"[{numero}] {b.name}({b.input})", flush=True)
                         t0 = time.time()
                         salida = _ejecutar_con_tope(b.name, b.input, numero, sesion)
+                        if b.name == "registrar_consulta":
+                            registro_manual = True
+                        elif b.name.startswith("buscar") and "error" not in salida:
+                            encontro = bool(salida.get("coincidencias") or salida.get("resultados"))
+                            busquedas.append((b.name, next(iter(b.input.values()), ""), encontro))
                         if b.name.startswith("buscar"):
                             sesion.pop("imagen", None)  # ya buscó: no hace falta seguir mandando la foto
                         print(f"[{numero}] {b.name} listo en {time.time() - t0:.2f}s", flush=True)
@@ -350,6 +357,15 @@ def responder(numero, texto_usuario, avisar=None, imagen=None, nombre=None):
                 mensajes.append({"role": "user", "content": resultados})
         finally:
             faulthandler.cancel_dump_traceback_later()
+            # Si Claude buscó pero se olvidó de registrar la consulta, la guardamos igual (más básica)
+            if busquedas and not registro_manual:
+                herramienta, consulta, encontro = busquedas[-1]
+                registro.consulta(numero, sesion, {
+                    "pieza": consulta if herramienta == "buscar_por_vehiculo" else "",
+                    "codigo_pedido": consulta if herramienta == "buscar_por_codigo" else "",
+                    "resultado": "lo tenemos" if any(e for _, _, e in busquedas) else "no lo tenemos",
+                    "notas": "registro automático: " + " | ".join(c for _, c, _ in busquedas),
+                })
             if aviso:
                 aviso.cancel()
 
