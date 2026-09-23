@@ -20,7 +20,9 @@ _http = requests.Session()
 _http.trust_env = False
 _cola = {}  # numero -> [mensajes pendientes]
 _cola_lock = threading.Lock()
-FUERA_DE_VENTANA = {131047, 131026}  # "pasaron más de 24 h" / no se puede entregar
+# Errores por los que el mensaje se guarda y se entrega cuando esa persona escriba:
+# 131047 = pasaron más de 24 h, 131026 = no se pudo entregar, 131030 = número de prueba no autorizado todavía
+FUERA_DE_VENTANA = {131047, 131026, 131030}
 
 
 def normalizar_ar(numero):

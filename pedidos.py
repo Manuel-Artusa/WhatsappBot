@@ -115,6 +115,10 @@ def _nuevo_id():
 def _texto_items(p, para_vendedor=False):
     lineas = []
     for i in p["items"]:
+        if para_vendedor and not (i.get("codigo_fact") and i.get("ubicacion")):
+            extra = catalogo.datos_internos(i.get("codigo", ""))
+            i["codigo_fact"] = i.get("codigo_fact") or extra["codigo_fact"]
+            i["ubicacion"] = i.get("ubicacion") or extra["ubicacion"]
         precio = (f" — {catalogo.formatear_precio(_precio_a_numero(i['precio_unitario']))} c/u"
                   if i.get("precio_unitario") else "")
         if para_vendedor:
@@ -232,6 +236,8 @@ HERRAMIENTAS_VENDEDOR = [
          "pedido_o_numero": {"type": "string", "description": "Número de pedido (P-1234) o teléfono del cliente"},
          "mensaje": {"type": "string", "description": "El mensaje, redactado para el cliente"}},
          "required": ["pedido_o_numero", "mensaje"]}},
+    {"name": "buscar_en_lista", "description": "Busca un producto en la lista de precios con los datos internos: código de facturación (columna D, NRO SISTEMA), ubicación en el depósito y precios.",
+     "input_schema": {"type": "object", "properties": {"codigo_o_texto": {"type": "string"}}, "required": ["codigo_o_texto"]}},
     {"name": "marcar_entregado", "description": "El pedido ya se entregó o despachó.",
      "input_schema": {"type": "object", "properties": {"pedido": {"type": "string"}}, "required": ["pedido"]}},
     {"name": "cancelar_pedido", "description": "Cancelar un pedido.",
@@ -246,6 +252,19 @@ def _buscar_pedido(texto):
 
 
 def _ejecutar_vendedor(nombre, d):
+    if nombre == "buscar_en_lista":
+        q = d["codigo_o_texto"]
+        res = catalogo.buscar_por_codigo(q, "casa_de_repuestos")
+        filas = res["coincidencias"] or catalogo.buscar_por_texto(q, "casa_de_repuestos", limite=8)
+        salida = []
+        for f in filas[:8]:
+            codigo = f["codigos"].split()[0] if f["codigos"] else ""
+            internos = catalogo.datos_internos(codigo)
+            precios = catalogo.buscar_por_codigo(codigo, "particular")["coincidencias"]
+            salida.append({**f, "precio_casa_de_repuestos": f["precio"],
+                           "precio_particular": precios[0]["precio"] if precios else "",
+                           "codigo_facturacion": internos["codigo_fact"], "ubicacion": internos["ubicacion"]})
+        return {"resultados": salida} if salida else {"resultados": [], "nota": "No aparece en la lista."}
     if nombre == "mensaje_a_cliente":
         p = _buscar_pedido(d["pedido_o_numero"])
         numero = p["numero"] if p else re.sub(r"\D", "", d["pedido_o_numero"])
@@ -290,8 +309,10 @@ def mensaje_vendedor(numero, texto="", archivo=None):
 
     with _lock:
         abiertos = [p for p in _pedidos.values() if p["estado"] in ABIERTOS]
-    lista = "\n".join(f"- {p['id']} | {p['estado']} | {_cliente_txt(p)} | " + "; ".join(
-        f"{i.get('cantidad', 1)}x {i.get('codigo', '')} {i.get('descripcion', '')[:40]}" for i in p["items"])
+    lista = "\n\n".join(
+        f"PEDIDO {p['id']} — estado: {p['estado']} ({ESTADOS[p['estado']]})\nCliente: {_cliente_txt(p)}\n"
+        f"{_texto_items(p, para_vendedor=True)}\nTotal: {p['total']} | Factura: {p.get('datos_factura') or '-'} | "
+        f"Entrega: {p.get('envio') or '-'}"
         for p in abiertos) or "(no hay pedidos abiertos)"
     derivadas = "\n".join(f"- {c['fecha']} +{c['numero']} {c['nombre']}: {c['resumen'][:150]}" for c in _derivadas) or "(ninguna)"
     sistema = f"""Sos el asistente interno de ventas de una casa de repuestos. Te escribe un VENDEDOR (no un cliente).
@@ -308,7 +329,11 @@ CONSULTAS DERIVADAS RECIENTES:
 - Si quiere que le digas algo a un cliente -> mensaje_a_cliente.
 - "entregado", "retiró", "despachado" -> marcar_entregado.
 - Si no queda claro de qué pedido habla y hay varios, preguntale.
-- La factura la manda como archivo (PDF o foto): si pregunta, explicale eso."""
+- La factura la manda como archivo (PDF o foto): si pregunta, explicale eso.
+- Tenés TODOS los datos internos: código de facturación (columna D de la lista, "NRO SISTEMA"), ubicación en el depósito,
+  cantidades, precios y datos de factura. Están arriba en cada pedido y podés buscar cualquier producto con buscar_en_lista.
+  Nunca digas que no tenés acceso a la lista o al Excel.
+- Cuando te pida los datos de un pedido, pasale por cada producto: cantidad, código de facturación, código, descripción y ubicación."""
     hist = _historial_vendedor.setdefault(numero, [])
     mensajes = hist[-8:] + [{"role": "user", "content": texto or "(mensaje vacío)"}]
     textos = []
