@@ -34,6 +34,23 @@ _sesiones = {}
 _locks = {}
 _locks_lock = threading.Lock()
 
+MENSAJE_PARAGUAY = os.environ.get(
+    "MENSAJE_PARAGUAY",
+    "Hola buenas! Te paso el número de Monse, con ella vas a poder concretar tu venta: +595 994 642911")
+
+
+def _leer_negocio():
+    """Lee negocio.txt: lo que el bot tiene que saber del negocio (editable sin tocar código)."""
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "negocio.txt")
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            return "\n".join(l for l in f.read().splitlines() if not l.lstrip().startswith("#")).strip()
+    except FileNotFoundError:
+        return ""
+
+
+INFO_NEGOCIO = _leer_negocio()
+
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
 
@@ -47,6 +64,12 @@ def _prompt_sistema(sesion):
     else:
         tipo = "TODAVÍA NO LO SABÉS"
     return f"""Sos vendedor/a de {NOMBRE_NEGOCIO}, una casa de repuestos de inyección diesel y turbos de Córdoba, Argentina. Atendés por WhatsApp.
+
+SOBRE EL NEGOCIO (esto es lo único que sabés del negocio: no inventes servicios, sucursales ni políticas)
+{INFO_NEGOCIO}
+
+PARAGUAY
+- Si el cliente es de Paraguay, dice que está en Paraguay o pregunta por Paraguay, respondé EXACTAMENTE este mensaje y nada más: "{MENSAJE_PARAGUAY}". No le cotices ni le pases precios de la lista.
 
 CÓMO HABLÁS
 - Como una persona real del mostrador: cordial, directo, en español rioplatense (vos, tenés). Mensajes cortos, como en WhatsApp.
@@ -72,6 +95,7 @@ PASO 2: BUSCAR EL REPUESTO
 - Cuando ofrezcas un producto, nombralo con el código principal que figura en "codigos" y, si ayuda, el código original del auto que aparece en la descripción.
 
 FOTOS Y AUDIOS
+- Si el cliente manda una foto antes de que sepas si es casa de repuestos o particular, leé igual el código y decíselo en tu respuesta (ej: "Veo que es un Bosch *0 445 110 183*"), y después preguntá el tipo de cliente. Nunca digas que estás viendo algo que no ves.
 - Si el cliente manda una foto, buscá el código grabado o impreso en la pieza o la etiqueta (ej: Bosch 0 445 110 183, Denso 095000-7760, Delphi, código OEM) y buscalo con buscar_por_codigo. Si no se lee bien, pedile otra foto más de cerca y con buena luz. Si la foto es del vehículo o de otra cosa, usala para entender qué necesita.
 - Los audios te llegan transcriptos y pueden tener errores, sobre todo en los códigos. Si el código de un audio no aparece, repetíselo al cliente para confirmarlo o pedile que lo escriba.
 
@@ -218,20 +242,35 @@ def responder(numero, texto_usuario, avisar=None, imagen=None):
     """Recibe el mensaje del cliente y devuelve el texto de respuesta.
     avisar(texto): función opcional para mandar un mensaje intermedio si la respuesta tarda.
     imagen: (bytes, tipo_mime) si el cliente mandó una foto."""
+    # Números de Paraguay (+595): directo al contacto de Paraguay, sin pasar por Claude
+    if numero.startswith("595"):
+        print(f"[{numero}] Número de Paraguay: derivado a Monse", flush=True)
+        return MENSAJE_PARAGUAY
+
     with _lock_de(numero):  # un mensaje por vez por cliente
         sesion = _sesion(numero)
+        # La foto se guarda un par de mensajes más, por si el bot todavía no pudo buscar
+        # (por ejemplo, porque primero tenía que preguntar si es casa de repuestos o particular).
         if imagen:
-            datos, mime = imagen
-            contenido = [
-                {"type": "image", "source": {"type": "base64", "media_type": mime,
-                                             "data": base64.standard_b64encode(datos).decode()}},
-                {"type": "text", "text": texto_usuario or "(El cliente mandó esta foto, sin texto.)"},
-            ]
-            # en el historial guardamos solo una nota, no la foto entera
+            sesion["imagen"] = {"datos": imagen[0], "mime": imagen[1], "turnos": 3}
+            nota = texto_usuario or "(El cliente mandó esta foto, sin texto.)"
             texto_historial = f"[Mandó una foto] {texto_usuario}".strip()
         else:
-            contenido = texto_usuario
+            nota = texto_usuario
             texto_historial = texto_usuario
+        foto = sesion.get("imagen")
+        if foto and foto["turnos"] > 0:
+            foto["turnos"] -= 1
+            if not imagen:
+                nota = f"(Te vuelvo a pasar la foto que el cliente mandó antes.)\n{texto_usuario}"
+            contenido = [
+                {"type": "image", "source": {"type": "base64", "media_type": foto["mime"],
+                                             "data": base64.standard_b64encode(foto["datos"]).decode()}},
+                {"type": "text", "text": nota},
+            ]
+        else:
+            sesion.pop("imagen", None)
+            contenido = texto_usuario
         mensajes = sesion["historial"] + [{"role": "user", "content": contenido}]
         inicio = time.time()
         aviso = None
@@ -269,6 +308,8 @@ def responder(numero, texto_usuario, avisar=None, imagen=None):
                         print(f"[{numero}] {b.name}({b.input})", flush=True)
                         t0 = time.time()
                         salida = _ejecutar_con_tope(b.name, b.input, numero, sesion)
+                        if b.name.startswith("buscar"):
+                            sesion.pop("imagen", None)  # ya buscó: no hace falta seguir mandando la foto
                         print(f"[{numero}] {b.name} listo en {time.time() - t0:.2f}s", flush=True)
                         resultados.append({"type": "tool_result", "tool_use_id": b.id,
                                            "content": json.dumps(salida, ensure_ascii=False)})

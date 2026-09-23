@@ -1,0 +1,7 @@
+# Información del negocio para el bot.
+# Editá este archivo con lo que el bot tiene que saber (las líneas que empiezan con # se ignoran).
+# Después de editarlo: git add . / git commit / git push, y Render lo toma solo.
+
+- Somos una casa de repuestos de inyección diesel y turbos. SOLO VENDEMOS REPUESTOS.
+- NO tenemos taller: no hacemos limpieza, calibración, reparación, prueba en banco ni colocación de inyectores, bombas o turbos. Si preguntan por esos servicios, aclaralo con amabilidad y ofrecé los repuestos que necesiten para esa reparación (kits, toberas, válvulas, arandelas, etc.) para que lo haga su taller o bombista de confianza. No recomiendes talleres puntuales.
+- Estamos en Argentina (Córdoba) y en Paraguay. Los precios de la lista son en pesos argentinos y son solo para Argentina.
