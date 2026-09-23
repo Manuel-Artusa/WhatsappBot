@@ -131,6 +131,7 @@ PASO 3: SI QUIERE COMPRAR
 PEDIDOS DE ESTE CLIENTE
 {pedidos.resumen_para_cliente(sesion.get("numero", ""))}
 - Si hay un pedido "esperando_pago" y el cliente dice que ya transfirió, pedile que te mande la foto o el PDF del comprobante por acá.
+- Si el cliente te manda una foto que es un comprobante de transferencia o pago, llamá a informar_comprobante (aunque no veas el pedido acá).
 - Si hay un pedido "falta_stock", ayudalo a elegir una alternativa (buscala en la lista) o a seguir sin ese producto, y volvé a llamar a crear_pedido.
 - Si pregunta por su pedido, contale en qué estado está con palabras simples.
 
@@ -189,6 +190,15 @@ HERRAMIENTAS = [
                 "notas": {"type": "string"},
             },
             "required": ["items", "datos_factura", "envio"],
+        },
+    },
+    {
+        "name": "informar_comprobante",
+        "description": "Si la foto que mandó el cliente es un comprobante de transferencia o de pago, llamala: se lo reenvía al vendedor.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"monto": {"type": "string"}, "destinatario": {"type": "string"},
+                           "fecha": {"type": "string"}, "observaciones": {"type": "string"}},
         },
     },
     {
@@ -269,6 +279,14 @@ def _ejecutar(nombre, datos, numero, sesion):
     if nombre == "registrar_consulta":
         registro.consulta(numero, sesion, datos)
         return {"ok": True}
+    if nombre == "informar_comprobante":
+        foto = sesion.get("imagen")
+        if not foto:
+            return {"error": "No tengo la foto del comprobante. Pedile que la mande de nuevo."}
+        respuesta = pedidos.reenviar_comprobante(numero, foto["datos"], foto["mime"], "comprobante.jpg",
+                                                 {**datos, "es_comprobante": True}, sesion=sesion)
+        sesion.pop("imagen", None)
+        return {"ok": True, "decile_al_cliente": respuesta}
     if nombre == "crear_pedido":
         return pedidos.crear(numero, sesion, datos)
     if nombre == "pasar_a_vendedor":

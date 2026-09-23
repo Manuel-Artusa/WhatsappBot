@@ -410,47 +410,78 @@ HERRAMIENTA_COMPROBANTE = {
         "required": ["es_comprobante"]}}
 
 
-def revisar_comprobante(numero, datos, mime, nombre_archivo):
-    """Si el cliente tiene un pedido esperando pago y el archivo es un comprobante, lo procesa y
-    devuelve la respuesta para el cliente. Si no, devuelve None y sigue la charla normal."""
-    esperando = [p for p in pedidos_de(numero) if p["estado"] == "esperando_pago"]
-    if not esperando:
-        return None
-    p = esperando[0]
+PALABRAS_PAGO = re.compile(r"transf|comprobante|pag(u|o|a|é|ue)|deposit|abon", re.I)
+
+
+def _bloque_archivo(datos, mime):
+    fuente = {"type": "base64", "media_type": mime, "data": base64.standard_b64encode(datos).decode()}
     if mime == "application/pdf":
-        bloque = {"type": "document", "source": {"type": "base64", "media_type": mime, "data": base64.standard_b64encode(datos).decode()}}
-    elif mime in ("image/jpeg", "image/png", "image/webp", "image/gif"):
-        bloque = {"type": "image", "source": {"type": "base64", "media_type": mime, "data": base64.standard_b64encode(datos).decode()}}
-    else:
+        return {"type": "document", "source": fuente}
+    if mime in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+        return {"type": "image", "source": fuente}
+    return None
+
+
+def revisar_comprobante(numero, datos, mime, nombre_archivo, texto=""):
+    """Se llama con cada foto o PDF que manda un cliente. Si es un comprobante de pago, se lo reenvía
+    al vendedor (con el pedido si lo encuentra) y devuelve la respuesta para el cliente.
+    Si no es un comprobante, devuelve None y la charla sigue normal."""
+    bloque = _bloque_archivo(datos, mime)
+    if not bloque:
         return None
+    abiertos = pedidos_de(numero)
+    # Solo gastamos en revisar si puede ser un pago: hay un pedido abierto, es un PDF o el texto habla de pago
+    if not (abiertos or mime == "application/pdf" or PALABRAS_PAGO.search(texto or "")):
+        return None
+    p = next((x for x in abiertos if x["estado"] == "esperando_pago"), abiertos[0] if abiertos else None)
     try:
         r = cliente_ia.messages.create(
             model=MODELO, max_tokens=500, tools=[HERRAMIENTA_COMPROBANTE], tool_choice={"type": "tool", "name": "resultado"},
             messages=[{"role": "user", "content": [bloque, {"type": "text", "text":
-                f"¿Esto es un comprobante de transferencia o pago? El total del pedido es {p['total']} y las cuentas "
-                f"válidas son:\n{DATOS_PAGO}\nExtraé los datos."}]}])
+                "¿Esto es un comprobante de transferencia o de pago? "
+                + (f"El total del pedido es {p['total']}. " if p else "")
+                + f"Las cuentas válidas para transferir son:\n{DATOS_PAGO}\nExtraé los datos."}]}])
         info = next(b.input for b in r.content if b.type == "tool_use")
     except Exception as e:
-        print("No se pudo analizar el comprobante:", repr(e)[:200], flush=True)
-        info = {"es_comprobante": True, "observaciones": "no se pudo leer automáticamente"}
+        print("No se pudo analizar el archivo:", repr(e)[:200], flush=True)
+        info = {"es_comprobante": bool(p and p["estado"] == "esperando_pago"),
+                "observaciones": "no se pudo leer automáticamente"}
+    print(f"[{numero}] ¿Es comprobante? {info.get('es_comprobante')} — monto {info.get('monto')}", flush=True)
     if not info.get("es_comprobante"):
         return None
+    return reenviar_comprobante(numero, datos, mime, nombre_archivo, info, p)
 
+
+def reenviar_comprobante(numero, datos, mime, nombre_archivo, info, p=None, sesion=None):
+    """Le pasa el comprobante al vendedor con el pedido para preparar. Si no encuentra el pedido
+    (por ejemplo, se reinició el servidor), igual se lo pasa para que lo revise a mano."""
+    if p is None:
+        abiertos = pedidos_de(numero)
+        p = next((x for x in abiertos if x["estado"] == "esperando_pago"), abiertos[0] if abiertos else None)
+    titulo = f"pedido {p['id']}" if p else "pago de cliente"
     for v in VENDEDORES:
         try:
-            whatsapp.enviar_archivo(v, datos, mime, nombre_archivo or f"Comprobante {p['id']}", f"Comprobante del pedido {p['id']}")
+            whatsapp.enviar_archivo(v, datos, mime, nombre_archivo or "comprobante.jpg", f"Comprobante — {titulo}")
         except Exception as e:
             print("No se pudo reenviar el comprobante:", repr(e)[:200], flush=True)
-    _avisar_vendedores(
-        f"💰 *PAGO INFORMADO — PEDIDO {p['id']}*\n"
-        f"Cliente: {_cliente_txt(p)}\n"
-        f"Monto del comprobante: *{info.get('monto') or '?'}* (total del pedido: {p['total']})\n"
-        f"Destino: {info.get('destinatario') or '?'} — Fecha: {info.get('fecha') or '?'}\n"
-        + (f"⚠️ {info['observaciones']}\n" if info.get("observaciones") else "")
-        + "*Verificá que la plata esté acreditada antes de entregar.*\n\n"
-        f"📦 *PREPARAR:*\n{_texto_items(p, para_vendedor=True)}\n\n"
-        f"*Entrega:* {p['envio'] or '-'}\n\n"
-        f"Cuando se entregue o despache, avisame: *{p['id']} entregado*")
-    _guardar(p, "pago_informado")
-    print(f"[{numero}] Comprobante del pedido {p['id']} reenviado al vendedor", flush=True)
+    datos_pago = (f"Monto del comprobante: *{info.get('monto') or '?'}*"
+                  + (f" (total del pedido: {p['total']})" if p else "") + "\n"
+                  f"Destino: {info.get('destinatario') or '?'} — Fecha: {info.get('fecha') or '?'}\n"
+                  + (f"⚠️ {info['observaciones']}\n" if info.get("observaciones") else "")
+                  + "*Verificá que la plata esté acreditada antes de entregar.*\n\n")
+    if p:
+        _avisar_vendedores(
+            f"💰 *PAGO INFORMADO — PEDIDO {p['id']}*\nCliente: {_cliente_txt(p)}\n" + datos_pago
+            + f"📦 *PREPARAR:*\n{_texto_items(p, para_vendedor=True)}\n\n"
+            f"*Entrega:* {p['envio'] or '-'}\n\n"
+            f"Cuando se entregue o despache, avisame: *{p['id']} entregado*")
+        _guardar(p, "pago_informado")
+        print(f"[{numero}] Comprobante del pedido {p['id']} reenviado al vendedor", flush=True)
+    else:
+        nombre = (sesion or {}).get("nombre") or "Cliente"
+        _avisar_vendedores(
+            f"💰 *COMPROBANTE RECIBIDO*\nCliente: {nombre} — +{numero}\n" + datos_pago
+            + "No encontré un pedido abierto de este cliente (puede que se haya reiniciado el sistema). "
+              "Revisá la charla para ver qué compró.")
+        print(f"[{numero}] Comprobante sin pedido asociado: reenviado igual al vendedor", flush=True)
     return "¡Recibí el comprobante, gracias! 🙌 Apenas se acredite te preparamos el pedido y te avisamos."

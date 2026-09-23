@@ -90,7 +90,7 @@ def procesar_cliente(msg, nombre):
         datos, mime, nombre_archivo, texto = _archivo(msg, tipo)
         print(f"[{numero}] {'Foto recibida' if tipo == 'image' else 'Documento recibido'} ({len(datos) // 1024} KB) {texto}", flush=True)
         # ¿Es el comprobante de un pedido que está esperando el pago?
-        respuesta = pedidos.revisar_comprobante(numero, datos, mime, nombre_archivo)
+        respuesta = pedidos.revisar_comprobante(numero, datos, mime, nombre_archivo, texto)
         if respuesta:
             bot.nota_en_charla(numero, respuesta)
             return respuesta
