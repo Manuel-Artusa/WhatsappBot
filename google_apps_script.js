@@ -42,9 +42,10 @@ function doPost(e) {
   try {
     preparar();
     if (datos.accion === 'consulta') registrarConsulta(datos);
-    if (datos.accion === 'contacto') registrarContacto(datos);
-    if (datos.accion === 'pedido_guardar') guardarPedido(datos.pedido);
-    if (datos.accion === 'pedidos_abiertos') return respuesta({ ok: true, pedidos: pedidosAbiertos() });
+    else if (datos.accion === 'contacto') registrarContacto(datos);
+    else if (datos.accion === 'pedido_guardar') guardarPedido(datos.pedido);
+    else if (datos.accion === 'pedidos_abiertos') return respuesta({ ok: true, pedidos: pedidosAbiertos() });
+    else return respuesta({ ok: false, error: 'accion desconocida: ' + datos.accion });
     return respuesta({ ok: true });
   } finally {
     lock.releaseLock();

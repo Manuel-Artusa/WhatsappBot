@@ -213,7 +213,9 @@ def _para_cliente(p, tipo_cliente):
         "descripcion": p["descripcion"],
         "marca": p["marca"],
         "categoria": p["categoria"],
-        "precio": formatear_precio(precio) if precio > 0 else "a pedido / consultar precio",
+        # A casas de repuestos el precio de taller se pasa más IVA; al particular, con IVA incluido
+        "precio": (formatear_precio(precio) + (" + IVA" if tipo_cliente == "casa_de_repuestos" else ""))
+                  if precio > 0 else "a pedido / consultar precio",
     }
 
 

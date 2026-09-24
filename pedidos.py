@@ -195,7 +195,8 @@ def crear(numero, sesion, datos):
             "estado": "esperando_stock",
             "nombre": sesion.get("nombre") or p.get("nombre", ""), "tipo": sesion.get("tipo") or "",
             "negocio": sesion.get("negocio") or "", "items": items,
-            "total": catalogo.formatear_precio(total) if total else "a confirmar",
+            "total": (catalogo.formatear_precio(total) + (" + IVA" if sesion.get("tipo") == "casa_de_repuestos" else ""))
+                     if total else "a confirmar",
             "datos_factura": datos.get("datos_factura", ""), "envio": datos.get("envio", ""),
             "notas": datos.get("notas", ""),
         })
